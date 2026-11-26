@@ -1,8 +1,10 @@
-# Original game files are never distributed by this project.
-/resources/th07.exe
-/resources/*.dat
-/resources/*.zip
-/resources/*.rar
+# Original game files are never distributed by this project. The build copies them
+# into build/ from .tools/, which is ignored below.
+*.dat
+*.exe
+*.cfg
+*.zip
+*.rar
 
 # Local copies of adjacent-version source repositories.
 /_references/

@@ -6,13 +6,15 @@
 ## 目录
 
 ```
-src/            游戏源码（重建自原版反汇编，686/686 函数验证）
+src/            游戏源码（重建自原版反汇编）
   legacy/       只有头文件。这些 .hpp 被主源码引用，对应的 .cpp 是同一个
                 翻译单元的拆分实现，当前构建不参与编译。
   pbg4/         归档格式与 LZSS 压缩
-resources/csv/  原版字符串表 i18n.csv
 tools/          构建与代码生成
-.tools/         本地工具链（不入库）
+  build.py      编译 + 链接，产出可直接运行的 build/
+  generate_i18n.py   i18n.csv -> i18n.hpp
+  i18n.csv      原版字符串表
+.tools/         本地工具链与游戏数据（不入库）
 build/          构建产物（不入库）
 ```
 
@@ -22,18 +24,77 @@ build/          构建产物（不入库）
 python tools/build.py
 ```
 
-产出 `build/th07.exe`。需要：
+需要：
 
 - MSVC 32 位编译器（`cl.exe` / `link.exe`）
 - Windows SDK（脚本自动探测版本）
 - DirectX 8 SDK，解压到 `.tools/dx8sdk`，需要其中的 `include/d3d8.h` 与 `lib/d3d8.lib`
+- `.tools/th07.dat` 与 `.tools/thbgm.dat`
 
 不依赖 Wine：源码目标是 Win32，本机有 `Hostx86\x86\cl.exe`，原生编译即可。
 
-运行需要原版数据文件 `th07.dat` 和 `thbgm.dat` 放在 exe 同目录。用
-`.tools/thtk-bin-12` 里的 `thdat -xd th07.dat` 解包，得到 63 个 `.anm`。
-`th07.cfg` 必须存在且版本字段为 `0x70002`，否则游戏会用默认值初始化，而
-默认是全屏。
+`build/` 每次构建前清空，只留运行游戏需要的四个文件：
+
+```
+build/th07.exe     产物
+build/th07.dat     从 .tools 拷贝，图形 / ECL / msg
+build/thbgm.dat    从 .tools 拷贝，音乐
+build/th07.cfg     脚本生成，窗口模式
+```
+
+直接双击 `build/th07.exe` 即可运行。
+
+中间产物全在 `build/tmp/`，构建结束默认删掉：
+
+```
+build/tmp/obj/         .obj
+build/tmp/log/         cl.exe 与 link.exe 日志
+build/tmp/generated/   i18n.hpp、th07.map
+build/tmp/lib/         链接器副产物（.lib / .exp / .pdb）
+build/tmp/dat/         dat 拷贝的中转缓存
+```
+
+出错时加 `--keep-tmp` 保留下来看日志。
+
+### th07.cfg 的来历
+
+脚本按 `src/Supervisor.hpp` 里的 `GameConfiguration` 逐字段写这个文件，不是塞一段
+固定的十六进制。字段偏移来自编译器（`sizeof(GameConfiguration) == 0x38`）：
+
+| 偏移 | 字段 | 值 |
+|---|---|---|
+| `0x00` | controllerMapping 9×i16 | `0,1,2,4,-1,-1,-1,-1,3` |
+| `0x14` | version i32 | `0x70002` |
+| `0x18`/`0x1a` | padAxisX/Y i16 | `600` |
+| `0x1c` | lifeCount | `2` |
+| `0x1d` | bombCount | `3` |
+| `0x1e` | colorMode16bit | `0`（32 位） |
+| `0x1f` | musicMode | `1`（WAV） |
+| `0x20` | playSounds | `1` |
+| `0x21` | defaultDifficulty | `1`（Normal） |
+| **`0x22`** | **windowed** | **`1`** |
+| `0x23` | frameskipConfig | `0` |
+| `0x24` | effectQuality | `2` |
+| `0x25` | slowMode | `0` |
+| `0x26` | shotSlow | `1` |
+| `0x27` | unused_27[13] | 全 0 |
+| `0x34` | opts u32 | `0` |
+
+`Supervisor::LoadConfig` 会逐项校验范围并要求大小正好 56 字节，任何一项不符就
+**静默回退到默认值**，而默认是全屏。所以这个文件必须精确，不能"差不多"。
+脚本里有两道断言：`windowed` 必须落在 `0x22`，以及所有字段都必须通过
+`LoadConfig` 的范围检查。
+
+除了 `windowed` 和 `colorMode16bit`，其余值都取自 `LoadConfig` 的默认初始化，
+等于"原版默认设置，只把全屏换成窗口"。
+
+**`colorMode16bit` 不能写 255。** `LoadConfig` 的默认值是 255，含义是"还没定"：
+`main.cpp` 的 `InitD3dDevice` 会按显示模式把它解析成 0（32 位）或 1（16 位）——
+但这段解析只在**全屏分支**里跑。窗口模式下分支不执行，255 会一直留着；而
+`LoadConfig` 的 `colorMode16bit < 2` 校验在那之前就发生了，于是整个文件被判非法、
+丢弃、重新初始化，结果回到全屏。所以这里直接写解析后的值 `0`。
+
+`.tools/th07.dat` 是 PBG4 归档，游戏通过 `Pbg4Archive` 直接读，不需要解包。
 
 ## 正确的做法
 

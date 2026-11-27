@@ -77,6 +77,7 @@ ZunResult EclManager::Load(const char *path)
         return ZUN_ERROR;
     }
 
+
     for (i = 0; i < ARRAY_SIZE_SIGNED(this->eclFile->timelinePtr); i++)
     {
         this->eclFile->timelinePtr[i] =

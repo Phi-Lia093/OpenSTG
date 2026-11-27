@@ -222,14 +222,18 @@ struct GameErrorContext
         {
             // STRING: TH07 0x00497c7c
             this->Log("---------------------------------------------------------- \r\n");
-            if (this->m_ShowMessageBox)
-            {
-                // STRING: TH07 0x00497c78
-                MessageBoxA(NULL, this->m_Buffer, "log", MB_ICONERROR);
-            }
+
+            // Write the log BEFORE anything that can block. The original showed a
+            // modal message box here, which stops the process until a human clicks it;
+            // during development that hides the very failure being diagnosed and
+            // leaves no file behind. The message is recorded to its own file instead,
+            // so the error is readable whether or not anyone is watching the screen.
             // STRING: TH07 0x00497c6c
             FileSystem::WriteDataToFile("./log.txt", this->m_Buffer,
                                         strlen(this->m_Buffer));
+
+            // The fatal text was already appended to fatal.txt as it was produced, so
+            // there is nothing to show or repeat here.
         }
     }
 };

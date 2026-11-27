@@ -1,7 +1,6 @@
 #pragma once
 
-#include <d3d8.h>
-
+#include "RenderCompat.hpp"
 #include "inttypes.hpp"
 
 union ZunColor {

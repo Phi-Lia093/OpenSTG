@@ -1,16 +1,26 @@
 //-----------------------------------------------------------------------------
 // File: dsutil.hpp
 //
-// Desc:
+// Desc: Wave reading and sound playback for the game's audio.
 //
-// Copyright (c) 1999-2000 Microsoft Corp. All rights reserved.
+//       This started life as Microsoft's DirectSound DSUtil framework. The
+//       playback half now runs on SDL3: every CSound owns its own
+//       SDL_AudioStream (opened with SDL_OpenAudioDeviceStream and driven by a
+//       get-callback), so several sounds can play at the same time and SDL
+//       does the mixing and any format conversion the device needs.
+//       CStreamingSound keeps its samples out of memory: it pulls them from
+//       the archive a chunk at a time and streams them the same way.
+//
+//       What did NOT change is the file layout of thbgm.dat: ThBgmFormat is
+//       still parsed straight out of the file, and CWaveFile still seeks
+//       inside it with the same offsets. That is why ThBgmFormat's size is
+//       still asserted.
 //-----------------------------------------------------------------------------
 #pragma once
 
-#include <dsound.h>
-#include <mmreg.h>
-#include <mmsystem.h>
+#include <SDL3/SDL.h>
 #include <windows.h>
+#include <mmsystem.h>
 
 #include "inttypes.hpp"
 
@@ -21,12 +31,27 @@ class CSoundManager;
 class CSound;
 class CStreamingSound;
 class CWaveFile;
+struct SoundPlayer;
 
 //-----------------------------------------------------------------------------
 // Typing macros
 //-----------------------------------------------------------------------------
 #define WAVEFILE_READ 1
 #define WAVEFILE_WRITE 2
+
+// Playing flags. These used to be the DirectSound play flags passed straight
+// through to the buffer; only "looping or not" ever mattered to the game.
+#define SDLSND_PLAY_ONCE 0
+#define SDLSND_PLAY_LOOPING 1
+
+// The number of bytes CStreamingSound feeds the stream per chunk. The game's
+// own StartBGM/LoadBGM compute this value and hand it over (the original used
+// it to slice the DirectSound ring buffer into notify regions).
+#define SDLSND_STREAM_CHUNK_SIZE (64 * 1024)
+
+// Once this much PCM is queued and waiting for the device, the BGM consumer
+// stops pulling from the archive until it has drained again.
+#define SDLSND_STREAM_MAX_QUEUED (256 * 1024)
 
 #define DSUtil_StopSound(s) \
     {                       \
@@ -38,10 +63,10 @@ class CWaveFile;
         if (s)              \
             s->Play(0, 0);  \
     }
-#define DSUtil_PlaySoundLooping(s)       \
-    {                                    \
-        if (s)                           \
-            s->Play(0, DSBPLAY_LOOPING); \
+#define DSUtil_PlaySoundLooping(s)              \
+    {                                           \
+        if (s)                                  \
+            s->Play(0, SDLSND_PLAY_LOOPING);    \
     }
 
 struct ThBgmFormat
@@ -54,11 +79,16 @@ struct ThBgmFormat
     WAVEFORMATEX format;
     // pad 2
 };
+// ThBgmFormat is the record format of the bgm/thbgm.fmt table (and of the
+// ZWAV header in thbgm.dat), read straight out of the data files. The layout
+// on disk is fixed, so this assertion has to stay.
 C_ASSERT(sizeof(ThBgmFormat) == 0x34);
 
 //-----------------------------------------------------------------------------
 // Name: class CWaveFile
-// Desc: Encapsulates reading or writing sound data to or from a wave file
+// Desc: Encapsulates reading a LZSS blob or a file inside a ZWAV archive.
+//       Nothing DirectSound-specific is left here; it is a byte source and the
+//       ZUN thbgm seek bookkeeping around it.
 //-----------------------------------------------------------------------------
 class CWaveFile
 {
@@ -97,47 +127,102 @@ class CWaveFile
 
 //-----------------------------------------------------------------------------
 // Name: class CSoundManager
-// Desc:
+// Desc: Owns the SDL audio subsystem. Sounds create their own device-backed
+//       streams, so this is a thin "is audio available" guard plus the
+//       factories that the game calls.
 //-----------------------------------------------------------------------------
 class CSoundManager
 {
   public:
-    LPDIRECTSOUND8 pDS;
+    SDL_AudioDeviceID audioDevice;
 
     CSoundManager();
     ~CSoundManager();
 
     HRESULT Initialize(HWND hWnd, DWORD dwCoopLevel, DWORD dwPrimaryChannels,
                        DWORD dwPrimaryFreq, DWORD dwPrimaryBitRate);
-    LPDIRECTSOUND8 GetDirectSound()
+    bool IsValid()
     {
-        return pDS;
+        return this->audioDevice != 0;
     }
     HRESULT SetPrimaryBufferFormat(DWORD dwPrimaryChannels, DWORD dwPrimaryFreq,
                                    DWORD dwPrimaryBitRate);
+    void Release();
 
+    // The dwCreationFlags/guid3DAlgorithm arguments are the caller's DirectSound
+    // buffer flags (DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_CTRLPOSITIONNOTIFY).
+    // SDL3 needs none of that, so they are accepted and ignored.
     HRESULT CreateStreaming(CStreamingSound **ppStreamingSound,
                             LPCSTR strWaveFileName, DWORD dwCreationFlags,
                             GUID guid3DAlgorithm, DWORD dwNotifyCount,
-                            DWORD dwNotifySize, HANDLE hNotifyEvent,
-                            ThBgmFormat *pzwf);
+                            DWORD dwNotifySize, ThBgmFormat *pzwf);
     HRESULT CreateStreamingFromMemory(CStreamingSound **ppStreamingSound,
                                       u8 *pbData, ULONG ulDataSize,
                                       ThBgmFormat *pzwf, DWORD dwCreationFlags,
                                       GUID guid3DAlgorithm, DWORD dwNotifyCount,
-                                      DWORD dwNotifySize, HANDLE hNotifyEvent);
+                                      DWORD dwNotifySize);
 };
 
 //-----------------------------------------------------------------------------
 // Name: class CSound
-// Desc: Encapsulates functionality of a DirectSound buffer.
+// Desc: A WAV held in memory and played through its own SDL_AudioStream.
+//       Each Play() starts a new voice, so the same sound can overlap itself
+//       (the game fires se_plst00 many times per frame). At most
+//       m_dwNumBuffers voices are alive; the oldest is recycled beyond that.
 //-----------------------------------------------------------------------------
-// VTABLE: TH07 0x00495290
 class CSound
 {
   public:
-    LPDIRECTSOUNDBUFFER *m_apDSBuffer;
-    DWORD m_dwDSBufferSize;
+    CSound(u8 *pbData, DWORD dwDataSize, DWORD dwNumBuffers,
+           CWaveFile *pWaveFile, const WAVEFORMATEX *pFormat);
+    virtual ~CSound();
+
+    // SDL_OpenAudioDeviceStream's get-callback: runs on the thread that drives
+    // the device, and fills the stream whenever the device wants samples.
+    static void SDLCALL StreamGetCallback(void *userdata, SDL_AudioStream *stream,
+                                          int additional_amount,
+                                          int total_amount);
+    void StreamGet(SDL_AudioStream *stream, int additional_amount);
+    bool FadeOutShouldSkip();
+    void MixVoices(u8 *buffer, u32 bytes, const SDL_AudioSpec &spec);
+
+    // Feed the device whatever it asks for. Kept for the old call shape; SDL's
+    // callback does the work, so this reports 0.
+    u32 Pump();
+    void StopVoices();
+    u32 CountVoices();
+    // True while any voice still has samples waiting to be played.
+    bool IsAudioPending();
+    void SetVolume(i32 dwVolume);
+    // Reopen the stream with the format of the WAV being played, so the device
+    // never has to guess.
+    void ReopenStream(const WAVEFORMATEX *format);
+
+    HRESULT Play(DWORD dwPriority, DWORD dwFlags);
+    u32 Stop();
+    HRESULT Reset();
+    HRESULT Pause();
+    HRESULT Unpause();
+    void FadeOut(f32 duration);
+
+    // A "voice" is one concurrent playback of the sound.
+    struct Voice
+    {
+        u32 position;
+        u32 length;
+        f32 gain;
+        bool active;
+        // Non-zero for one-shot voices: the SDL tick the voice starts at, so a
+        // voice that was silent while the device had nothing to send does not
+        // replay late. Streaming (BGM) voices leave it at 0 and play purely from
+        // the queue, because the BGM thread feeds that queue whenever it can.
+        Uint64 startedAt;
+    };
+
+    SDL_AudioStream *m_pAudioStream;
+    SDL_AudioSpec m_streamSpec;
+    const u8 *m_pData;
+    u32 m_dataSize;
     CWaveFile *m_pWaveFile;
     DWORD m_dwNumBuffers;
     i32 m_iCurFadeoutProgress;
@@ -148,35 +233,18 @@ class CSound
     DWORD unused_28;
     DWORD unused_2c;
     BOOL m_bIsPlaying;
-    DSBUFFERDESC m_dsbd;
-    CSoundManager *m_pSoundManager;
-
-    CSound(LPDIRECTSOUNDBUFFER *apDSBuffer, DWORD dwDSBufferSize,
-           DWORD dwNumBuffers, CWaveFile *pWaveFile);
-    virtual ~CSound();
-
-    // SYNTHETIC: TH07 0x0045d030
-    // CSound::`scalar deleting destructor'
-
-    HRESULT RestoreBuffer(LPDIRECTSOUNDBUFFER pDSB, BOOL *pbWasRestored);
-    HRESULT FillBufferWithSound(LPDIRECTSOUNDBUFFER pDSB,
-                                BOOL bRepeatWavIfBufferLarger);
-    LPDIRECTSOUNDBUFFER GetFreeBuffer();
-    LPDIRECTSOUNDBUFFER GetBuffer(DWORD dwIndex);
-
-    HRESULT Play(DWORD dwPriority, DWORD dwFlags);
-    u32 Stop();
-    HRESULT Reset();
-    HRESULT Pause();
-    HRESULT Unpause();
+    Voice *m_voices;
+    i32 m_soundVolume;
+    SDL_Mutex *m_lock;
+    // Milliseconds of audio mixed on stream callbacks so far; timeline for the
+    // timestamped one-shot voices.
+    Uint64 m_mixEpoch;
 };
-C_ASSERT(sizeof(CSound) == 0x5c);
 
 //-----------------------------------------------------------------------------
 // Name: class CStreamingSound
-// Desc: Encapsulates functionality to play a wave file with DirectSound.
+// Desc: Plays a CWaveFile by pulling chunks out of it on demand.
 //-----------------------------------------------------------------------------
-// VTABLE: TH07 0x0049528c
 class CStreamingSound : public CSound
 {
   public:
@@ -188,12 +256,9 @@ class CStreamingSound : public CSound
     HANDLE m_hNotifyEvent;
     BOOL m_bIsLocked;
 
-    CStreamingSound(LPDIRECTSOUNDBUFFER pDSBuffer, DWORD dwDSBufferSize,
-                    CWaveFile *pWaveFile, DWORD dwNotifySize);
+    CStreamingSound(CWaveFile *pWaveFile, ThBgmFormat *pFormat,
+                    DWORD dwNotifySize);
     ~CStreamingSound();
-
-    // SYNTHETIC: TH07 0x0045da80
-    // CStreamingSound::`scalar deleting destructor'
 
     HRESULT HandleWaveStreamNotification(BOOL bLoopedPlay);
     HRESULT Reset();
@@ -204,8 +269,7 @@ class CStreamingSound : public CSound
     {
         this->m_dwIsFadingOut = 1;
         this->m_iCurFadeoutProgress = (i32)(duration * 60.0f);
-        this->m_iTotalFadeout =
-            this->m_iCurFadeoutProgress;
+        this->m_iTotalFadeout = this->m_iCurFadeoutProgress;
     }
 
     CWaveFile *GetWaveFile()
@@ -213,4 +277,3 @@ class CStreamingSound : public CSound
         return this->m_pWaveFile;
     }
 };
-C_ASSERT(sizeof(CStreamingSound) == 0x78);

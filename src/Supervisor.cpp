@@ -1,6 +1,6 @@
 #include "Supervisor.hpp"
 
-#include <dinput.h>
+#include <SDL3/SDL.h>
 #include <stdio.h>
 
 #include "AnmManager.hpp"
@@ -39,6 +39,11 @@ u16 g_IsEighthFrameOfHeldInput;
 
 // GLOBAL: TH07 0x004b9e60
 u16 g_NumOfFramesInputsWereHeld;
+
+// The gamepad counterpart of the shot-slow focus timer in Global.cpp. That one is private
+// to the joystick code in Controller::GetControllerInput, so the SDL path keeps its own;
+// the arithmetic below is copied from it unchanged so the auto-focus timing is identical.
+static u16 g_GamepadAutoFocusTimer;
 
 // GLOBAL: TH07 0x00575950
 Supervisor g_Supervisor;
@@ -139,7 +144,9 @@ void Supervisor::CheckTiming()
 // FUNCTION: TH07 0x00437c39
 void AnmManager::ReleaseVertexBuffer()
 {
-    SAFE_RELEASE(this->vertexBuffer);
+    // vertexBuffer is no longer a D3D vertex buffer with a Release() to call: the
+    // renderer owns its own GPU buffers now and the field is plain storage.
+    this->vertexBuffer = NULL;
 }
 
 // FUNCTION: TH07 0x00437c70
@@ -164,7 +171,7 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
     if (!g_GameManager.slowModeSlowActive)
     {
         g_LastFrameRawInput = g_CurFrameRawInput;
-        g_CurFrameRawInput = Controller::GetInput();
+        g_CurFrameRawInput = Supervisor::GetInputFrame();
         g_IsEighthFrameOfHeldInput = 0;
         if (g_LastFrameRawInput == g_CurFrameRawInput)
         {
@@ -188,12 +195,11 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
     }
     else
     {
-        g_CurFrameRawInput |= Controller::GetInput();
+        g_CurFrameRawInput |= Supervisor::GetInputFrame();
     }
     if (arg->wantedState != arg->curState)
     {
         arg->prevState = arg->wantedState;
-        // STRING: TH07 0x00497230
         utils::DebugPrint2("scene %d -> %d\r\n", arg->wantedState,
                            arg->curState);
         switch (arg->wantedState)
@@ -201,8 +207,7 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
         case SUPERVISOR_STATE_INIT:
         CASE_SUPERVISOR_STATE_INIT:
             arg->curState = SUPERVISOR_STATE_MAINMENU;
-            g_Supervisor.d3dDevice->ResourceManagerDiscardBytes(0);
-            if (MainMenu::RegisterChain(0) != ZUN_SUCCESS)
+                    if (MainMenu::RegisterChain(0) != ZUN_SUCCESS)
             {
                 return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
             }
@@ -322,8 +327,7 @@ u32 Supervisor::OnUpdate(Supervisor *arg)
                 arg->curState = SUPERVISOR_STATE_INIT;
                 ReplayManager::SaveReplay(NULL, NULL);
                 arg->curState = SUPERVISOR_STATE_MAINMENU;
-                g_Supervisor.d3dDevice->ResourceManagerDiscardBytes(0);
-                if (MainMenu::RegisterChain(1) != ZUN_SUCCESS)
+                            if (MainMenu::RegisterChain(1) != ZUN_SUCCESS)
                 {
                     return CHAIN_CALLBACK_RESULT_EXIT_GAME_SUCCESS;
                 }
@@ -403,107 +407,289 @@ u32 Supervisor::OnDraw(Supervisor *arg)
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-// FUNCTION: TH07 0x0043832f
-BOOL CALLBACK Supervisor::EnumGameControllersCb(LPCDIDEVICEINSTANCEA pdidInstance,
-                                                void *pvRef)
-{
-    HRESULT hr;
-    if (!g_Supervisor.controller)
-    {
-        hr = g_Supervisor.directInput->CreateDevice(pdidInstance->guidInstance,
-                                                    &g_Supervisor.controller, NULL);
-        if (FAILED(hr))
-        {
-            return TRUE;
-        }
-    }
-
-    return FALSE;
-}
-
-#pragma var_order(dipr, idk)
-// FUNCTION: TH07 0x0043836e
-BOOL CALLBACK Supervisor::ControllerCallback(LPCDIDEVICEOBJECTINSTANCE lpddoi,
-                                             LPVOID pvRef)
-{
-    DIPROPRANGE dipr;
-    void *idk = pvRef;
-
-    if (lpddoi->dwType & DIDFT_AXIS)
-    {
-        dipr.diph.dwSize = sizeof(DIPROPRANGE);
-        dipr.diph.dwHeaderSize = 16;
-        dipr.diph.dwHow = 2;
-        dipr.diph.dwObj = lpddoi->dwType;
-        dipr.lMin = -1000;
-        dipr.lMax = 1000;
-        if (g_Supervisor.controller->SetProperty(DIPROP_RANGE, &dipr.diph) <
-            0)
-        {
-            return FALSE;
-        }
-    }
-
-    return TRUE;
-}
-
 // FUNCTION: TH07 0x004383d8
+//
+// Replaces the DirectInput 8 setup. There is nothing left to create: the keyboard is
+// read straight out of SDL (see Supervisor::GetInputFrame), and a gamepad -- if one is
+// attached -- is a single SDL_Gamepad handle. SDL's gamepad button indices line up with
+// the DirectInput joystick button indices that ControllerMapping stores (A, B, X, Y ...
+// are gamepad buttons 0, 1, 2, 3), so no remapping is needed.
 ZunResult Supervisor::SetupDInput()
 {
-    HINSTANCE hInstance = (HINSTANCE)GetWindowLongA(this->hwndGameWindow, -6);
-    if (this->cfg.disableDinput)
+    // The gamepad and joystick subsystems are not implied by SDL_INIT_VIDEO, so init
+    // them explicitly. SDL_InitSubSystem is idempotent: if main.cpp already brought
+    // SDL up, this only adds the flags that are still missing.
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD | SDL_INIT_JOYSTICK | SDL_INIT_EVENTS))
     {
-        return ZUN_ERROR;
-    }
-
-    if (FAILED(DirectInput8Create(hInstance, DIRECTINPUT_VERSION, IID_IDirectInput8A,
-                                  (LPVOID *)&this->directInput, NULL)))
-    {
-        this->directInput = NULL;
         g_GameErrorContext.Log(TH_ERR_DINPUT_INIT_FAIL);
         return ZUN_ERROR;
     }
 
-    if (FAILED(this->directInput->CreateDevice(GUID_SysKeyboard,
-                                               &this->keyboard, NULL)))
-    {
-        SAFE_RELEASE(this->directInput);
-        g_GameErrorContext.Log(TH_ERR_DINPUT_INIT_FAIL);
-        return ZUN_ERROR;
-    }
+    // Pick up anything already plugged in. Hotplug is handled by the SDL_EVENT_GAMEPAD_ADDED
+    // branch in ProcessInputEvents, so this only has to cover the initial state.
+    this->RefreshGamepad();
 
-    if (FAILED(this->keyboard->SetDataFormat(&c_dfDIKeyboard)))
-    {
-        SAFE_RELEASE(this->keyboard);
-        SAFE_RELEASE(this->directInput);
-        // STRING: TH07 0x004971d8
-        g_GameErrorContext.Log(TH_ERR_DINPUT_SETDATAFORMAT_FAIL);
-        return ZUN_ERROR;
-    }
-
-    if (FAILED(this->keyboard->SetCooperativeLevel(
-            this->hwndGameWindow,
-            DISCL_FOREGROUND | DISCL_NONEXCLUSIVE | DISCL_NOWINKEY)))
-    {
-        SAFE_RELEASE(this->keyboard);
-        SAFE_RELEASE(this->directInput);
-        g_GameErrorContext.Log(TH_ERR_DINPUT_SETCOOPERATIVELEVEL_FAIL);
-        return ZUN_ERROR;
-    }
-
-    this->keyboard->Acquire();
     g_GameErrorContext.Log(TH_LOG_DINPUT_INIT_SUCCESS);
-    this->directInput->EnumDevices(DI8DEVCLASS_GAMECTRL, EnumGameControllersCb, NULL, DIEDFL_ATTACHEDONLY);
-    if (this->controller)
+    if (g_Supervisor.controller)
     {
-        this->controller->SetDataFormat(&c_dfDIJoystick2);
-        this->controller->SetCooperativeLevel(this->hwndGameWindow, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
-        g_Supervisor.controllerCaps.dwSize = sizeof(DIDEVCAPS);
-        this->controller->GetCapabilities(&g_Supervisor.controllerCaps);
-        this->controller->EnumObjects(ControllerCallback, NULL, DIDFT_ALL);
         g_GameErrorContext.Log(TH_LOG_FOUND_PAD);
     }
     return ZUN_SUCCESS;
+}
+
+// Opens the gamepad SDL currently reports as connected, if it is not open already.
+// Called from SetupDInput and whenever an SDL_EVENT_GAMEPAD_ADDED arrives.
+void Supervisor::RefreshGamepad()
+{
+    int count = 0;
+    SDL_JoystickID *ids;
+
+    if (g_Supervisor.controller)
+    {
+        return;
+    }
+
+    if (g_Supervisor.cfg.disableDinput)
+    {
+        return;
+    }
+
+    ids = SDL_GetGamepads(&count);
+    if (ids && count > 0)
+    {
+        g_Supervisor.controller = SDL_OpenGamepad(ids[0]);
+    }
+    SDL_free(ids);
+}
+
+// The one place the raw button mask is produced for a frame.
+//
+// g_CurFrameRawInput holds the game's TouhouButton bitmask, not DIK scan codes: the
+// original translated the DirectInput keyboard byte array through KEY_PRESSED() into
+// TH_BUTTON_* bits, and that bit layout is what the gameplay code reads. The translation
+// is unchanged; only its source moved to SDL_GetKeyboardState().
+//
+// SDL pumps events here rather than relying on the main loop to have done it: the event
+// loop belongs to main.cpp / the renderer and is being reworked separately, whereas
+// OnUpdate (and the frame-stepping loop in the title screen) call this directly.
+u16 Supervisor::GetInputFrame()
+{
+    const bool *keys;
+    u16 buttons;
+
+    SDL_PumpEvents();
+    ProcessInputEvents();
+
+    buttons = 0;
+    keys = SDL_GetKeyboardState(NULL);
+    if (keys)
+    {
+        // Each line below binds the same *key* to the same Touhou button as the
+        // original's KEY_PRESSED(DIK_...) chain did. The constants are not numerically
+        // interchangeable: the DirectX SDK's DIK_* are PC set-1 scancodes (DIK_ESCAPE is
+        // 0x01, DIK_D is 0x20) while SDL's SDL_SCANCODE_* follow USB HID usage order
+        // (SDL_SCANCODE_ESCAPE is 41, SDL_SCANCODE_D is 7). Only the physical key they
+        // name matters here, so the mapping is by key, not by value.
+        if (keys[SDL_SCANCODE_UP])
+            buttons |= TH_BUTTON_UP;
+        if (keys[SDL_SCANCODE_DOWN])
+            buttons |= TH_BUTTON_DOWN;
+        if (keys[SDL_SCANCODE_LEFT])
+            buttons |= TH_BUTTON_LEFT;
+        if (keys[SDL_SCANCODE_RIGHT])
+            buttons |= TH_BUTTON_RIGHT;
+        if (keys[SDL_SCANCODE_KP_8])
+            buttons |= TH_BUTTON_UP;
+        if (keys[SDL_SCANCODE_KP_2])
+            buttons |= TH_BUTTON_DOWN;
+        if (keys[SDL_SCANCODE_KP_4])
+            buttons |= TH_BUTTON_LEFT;
+        if (keys[SDL_SCANCODE_KP_6])
+            buttons |= TH_BUTTON_RIGHT;
+        if (keys[SDL_SCANCODE_KP_7])
+            buttons |= TH_BUTTON_UP_LEFT;
+        if (keys[SDL_SCANCODE_KP_9])
+            buttons |= TH_BUTTON_UP_RIGHT;
+        if (keys[SDL_SCANCODE_KP_1])
+            buttons |= TH_BUTTON_DOWN_LEFT;
+        if (keys[SDL_SCANCODE_KP_3])
+            buttons |= TH_BUTTON_DOWN_RIGHT;
+        if (keys[SDL_SCANCODE_HOME])
+            buttons |= TH_BUTTON_HOME;
+        if (keys[SDL_SCANCODE_D])
+            buttons |= TH_BUTTON_D;
+        if (keys[SDL_SCANCODE_Z])
+            buttons |= TH_BUTTON_SHOOT;
+        if (keys[SDL_SCANCODE_X])
+            buttons |= TH_BUTTON_BOMB;
+        if (keys[SDL_SCANCODE_LSHIFT])
+            buttons |= TH_BUTTON_FOCUS;
+        if (keys[SDL_SCANCODE_RSHIFT])
+            buttons |= TH_BUTTON_FOCUS;
+        if (keys[SDL_SCANCODE_ESCAPE])
+            buttons |= TH_BUTTON_MENU;
+        if (keys[SDL_SCANCODE_LCTRL])
+            buttons |= TH_BUTTON_SKIP;
+        if (keys[SDL_SCANCODE_RCTRL])
+            buttons |= TH_BUTTON_SKIP;
+        if (keys[SDL_SCANCODE_Q])
+            buttons |= TH_BUTTON_Q;
+        if (keys[SDL_SCANCODE_S])
+            buttons |= TH_BUTTON_S;
+        if (keys[SDL_SCANCODE_RETURN])
+            buttons |= TH_BUTTON_ENTER;
+        if (keys[SDL_SCANCODE_R])
+            buttons |= TH_BUTTON_RESET;
+    }
+
+    return Supervisor::GetGamepadInput(buttons);
+}
+
+// The gamepad half of Controller::GetControllerInput(): the configured buttons and the
+// left stick, read from the SDL_Gamepad handle. Without a gamepad this returns the
+// keyboard-only mask unchanged, which is the original's behaviour with no DirectInput
+// controller present.
+//
+// ControllerMapping stores DirectInput joystick button indices; SDL's SDL_GamepadButton
+// values are the same numbering (A=0, B=1, X=2, Y=3, BACK=4, GUIDE=5, START=6, sticks 7,
+// shoulders 9..12, dpad 11..14), so the mapping is used as-is.
+u16 Supervisor::GetGamepadInput(u16 buttons)
+{
+    const ControllerMapping *mapping;
+    SDL_Gamepad *pad;
+    u32 shootPressed;
+    i32 x;
+    i32 y;
+    i32 axisLimit;
+
+    pad = g_Supervisor.controller;
+    if (!pad)
+    {
+        return buttons;
+    }
+
+    mapping = &g_Supervisor.cfg.controllerMapping;
+    x = (i32)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
+    y = (i32)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
+    axisLimit = ((i32)g_Supervisor.cfg.padAxisX + g_Supervisor.cfg.padAxisY) / 2;
+    if (axisLimit <= 0)
+    {
+        axisLimit = 1;
+    }
+
+    shootPressed = Supervisor::SetButtonFromGamepad(&buttons, mapping->shootButton,
+                                                    TH_BUTTON_SHOOT, pad);
+    if (g_Supervisor.cfg.shotSlow)
+    {
+        if (shootPressed != 0)
+        {
+            if (g_GamepadAutoFocusTimer < 20)
+            {
+                g_GamepadAutoFocusTimer++;
+            }
+            if (g_GamepadAutoFocusTimer >= 10)
+            {
+                buttons |= TH_BUTTON_FOCUS;
+            }
+        }
+        else
+        {
+            if (g_GamepadAutoFocusTimer > 10)
+            {
+                g_GamepadAutoFocusTimer -= 10;
+                buttons |= TH_BUTTON_FOCUS;
+            }
+            else
+            {
+                g_GamepadAutoFocusTimer = 0;
+            }
+        }
+    }
+
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->bombButton, TH_BUTTON_BOMB, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->focusButton, TH_BUTTON_FOCUS, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->menuButton, TH_BUTTON_MENU, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->upButton, TH_BUTTON_UP, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->downButton, TH_BUTTON_DOWN, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->leftButton, TH_BUTTON_LEFT, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->rightButton, TH_BUTTON_RIGHT, pad);
+    Supervisor::SetButtonFromGamepad(&buttons, mapping->skipButton, TH_BUTTON_SKIP, pad);
+
+    // The original also always treated joystick button 7 as the cheat-code D button.
+    if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)7))
+    {
+        buttons |= TH_BUTTON_D;
+    }
+
+    // DirectInput's lY grew downwards, matching TH_BUTTON_DOWN; SDL's LEFT Y grows
+    // upwards, so the comparisons are swapped relative to the old code.
+    if (x > axisLimit)
+    {
+        buttons |= TH_BUTTON_RIGHT;
+    }
+    if (x < -axisLimit)
+    {
+        buttons |= TH_BUTTON_LEFT;
+    }
+    if (y > axisLimit)
+    {
+        buttons |= TH_BUTTON_UP;
+    }
+    if (y < -axisLimit)
+    {
+        buttons |= TH_BUTTON_DOWN;
+    }
+
+    return buttons;
+}
+
+// The gamepad counterpart of Controller::SetButtonFromDirectInputJoystate: ORs the
+// Touhou button in when the mapped gamepad button is held, and reports whether it was.
+u32 Supervisor::SetButtonFromGamepad(u16 *outButtons, i16 controllerButtonToTest,
+                                     u32 touhouButton, SDL_Gamepad *pad)
+{
+    if (controllerButtonToTest < 0 || !pad)
+    {
+        return 0;
+    }
+
+    if (SDL_GetGamepadButton(pad, (SDL_GamepadButton)controllerButtonToTest))
+    {
+        *outButtons |= (u16)touhouButton;
+        return touhouButton;
+    }
+    return 0;
+}
+
+// Consumes the events this subsystem owns. The window-close and quit handling belongs
+// to main.cpp, so only gamepad add/remove is looked at here; everything else is left in
+// the queue for whoever else drains it.
+void Supervisor::ProcessInputEvents()
+{
+    SDL_Event event;
+
+    while (SDL_PollEvent(&event))
+    {
+        if (event.type == SDL_EVENT_GAMEPAD_ADDED)
+        {
+            Supervisor::RefreshGamepad();
+        }
+        else if (event.type == SDL_EVENT_GAMEPAD_REMOVED && g_Supervisor.controller &&
+                 event.gdevice.which == SDL_GetGamepadID(g_Supervisor.controller))
+        {
+            SDL_CloseGamepad(g_Supervisor.controller);
+            g_Supervisor.controller = NULL;
+        }
+    }
+
+    // A pad that was unplugged while its removal event went to someone else, or that was
+    // already attached before SDL saw it, would otherwise leave a dangling handle.
+    if (g_Supervisor.controller && !SDL_GamepadConnected(g_Supervisor.controller))
+    {
+        SDL_CloseGamepad(g_Supervisor.controller);
+        g_Supervisor.controller = NULL;
+        Supervisor::RefreshGamepad();
+    }
 }
 
 // FUNCTION: TH07 0x00438668
@@ -560,13 +746,9 @@ i32 Supervisor::CheckVSync()
 
     while (i < 1800 && fpsCount < 8)
     {
-        g_Supervisor.d3dDevice->BeginScene();
+        RendererBeginFrame();
         g_AnmManager->CopySurfaceToBackBuffer(0, 0, 0, 0, 0);
-        g_Supervisor.d3dDevice->EndScene();
-        if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-        {
-            g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-        }
+        RendererSwap();
         i++;
         timeBeginPeriod(1);
         timeEnd = timeGetTime();
@@ -633,20 +815,12 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
     i32 i;
 
     QueryPerformanceFrequency(&arg->perfFrequency);
-    g_Supervisor.d3dDevice->BeginScene();
-    g_Supervisor.d3dDevice->Clear(0, NULL, 1, 0xff000000, 1.0f, 0);
-    g_Supervisor.d3dDevice->EndScene();
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
-    g_Supervisor.d3dDevice->BeginScene();
-    g_Supervisor.d3dDevice->Clear(0, NULL, 1, 0xff000000, 1.0f, 0);
-    g_Supervisor.d3dDevice->EndScene();
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
+    // Clear to black and present twice, as the original did, so the window never shows
+    // stale contents while the data files load.
+    RendererClear(0.0f, 0.0f, 0.0f);
+    RendererSwap();
+    RendererClear(0.0f, 0.0f, 0.0f);
+    RendererSwap();
     if (LoadGameData() != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
@@ -668,13 +842,9 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
         i = 0;
         while (i < 4)
         {
-            g_Supervisor.d3dDevice->BeginScene();
+            RendererBeginFrame();
             g_AnmManager->CopySurfaceToBackBuffer(0, 0, 0, 0, 0);
-            g_Supervisor.d3dDevice->EndScene();
-            if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-            {
-                g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-            }
+            RendererSwap();
             i++;
         }
     }
@@ -708,6 +878,32 @@ ZunResult Supervisor::AddedCallback(Supervisor *arg)
 
     g_AnmManager->SetupVertexBuffer();
     TextHelper::CreateTextBuffer();
+
+    // The font the game draws text with. A face with wide script coverage is preferred so
+    // that translations do not have to change this list; the first one that loads wins.
+    {
+        const char *fontCandidates[] = {
+            "font/default.ttf",
+            "C:/Windows/Fonts/msgothic.ttc",
+            "C:/Windows/Fonts/YuGothR.ttc",
+            "C:/Windows/Fonts/NotoSans-Regular.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        };
+        for (i32 f = 0; f < ARRAY_SIZE_SIGNED(fontCandidates); f++)
+        {
+            FontFace *face = FontLoad(fontCandidates[f]);
+            if (face)
+            {
+                FontSetDefault(face);
+                break;
+            }
+        }
+        if (!FontGetDefault())
+        {
+            g_GameErrorContext.Log("error : no usable font, text will not be drawn");
+        }
+    }
+
     // STRING: TH07 0x00496fe0
     if (g_SoundPlayer.LoadFmt("bgm/thbgm.fmt"))
     {
@@ -766,17 +962,11 @@ ZunResult Supervisor::DeletedCallback(Supervisor *arg)
     }
     ReplayManager::SaveReplay(NULL, NULL);
     TextHelper::ReleaseTextBuffer();
-    if (arg->keyboard)
-    {
-        arg->keyboard->Unacquire();
-    }
-    SAFE_RELEASE(arg->keyboard);
     if (arg->controller)
     {
-        arg->controller->Unacquire();
+        SDL_CloseGamepad(arg->controller);
+        arg->controller = NULL;
     }
-    SAFE_RELEASE(arg->controller);
-    SAFE_RELEASE(arg->directInput);
 
     if (g_GameManager.globals)
     {
@@ -1042,102 +1232,101 @@ void Supervisor::TickTimer(i32 *frames, f32 *subframes)
 // ZUN name: snapShotScreen
 #pragma var_order(bmfh, versionDataExeSize, local_1c, backBuffer, stride,          \
                   srcPixel, dstPixel, y, x, bytesPerRow, lockedRect, bytesWritten, \
-                  bitmapFile)
 // FUNCTION: TH07 0x004395fb
 ZunBool Supervisor::TakeSnapshot(const char *filename)
 {
     HANDLE bitmapFile;
     DWORD bytesWritten;
-    D3DLOCKED_RECT lockedRect;
-    i32 bytesPerRow;
+    i32 stride;
     i32 x;
     i32 y;
     u8 *dstPixel;
     u8 *srcPixel;
-    i32 stride;
-    IDirect3DSurface8 *backBuffer;
+    u8 *pixels;
     BITMAPINFO *bitmapInfo;
     void *bitmapData;
     BITMAPFILEHEADER bmfh;
 
     bitmapInfo = NULL;
     bitmapData = NULL;
-    backBuffer = NULL;
-    this->d3dDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+
     memset(&bmfh, 0, sizeof(BITMAPFILEHEADER));
 
     // STRING: TH07 0x00496f98
     bmfh.bfType = *(WORD *)&"BM";
     bmfh.bfSize = bmfh.bfOffBits = 54;
-    switch (this->presentParameters.BackBufferFormat)
+
+    // Read the framebuffer back. The original locked the D3D back buffer; GL hands it
+    // back as RGBA8, which is then written out as a 24-bit BMP.
+    pixels = (u8 *)malloc((size_t)GAME_WINDOW_WIDTH * GAME_WINDOW_HEIGHT * 4);
+    if (!pixels)
     {
-    case D3DFMT_R5G6B5:
-        g_GameErrorContext.Log(TH_LOG_16BIT_NOT_SUPPORTED);
-        break;
-    case D3DFMT_X8R8G8B8:
-        bitmapInfo = (BITMAPINFO *)ZUN_ALLOC(sizeof(BITMAPINFO));
-        if (!bitmapInfo)
-        {
-            g_GameErrorContext.Log(TH_LOG_BITMAP_ALLOC_FAIL);
-            break;
-        }
-
-        memset(bitmapInfo, 0, sizeof(BITMAPINFO));
-        stride = 1920;
-        bitmapData = malloc(stride * GAME_WINDOW_HEIGHT);
-        if (!bitmapData)
-        {
-            g_GameErrorContext.Log(TH_LOG_BITMAP_ALLOC_FAIL);
-            break;
-        }
-
-        bmfh.bfSize += stride * GAME_WINDOW_HEIGHT;
-        bitmapInfo->bmiHeader.biBitCount = 24;
-        bitmapInfo->bmiHeader.biSize = 40;
-        bitmapInfo->bmiHeader.biWidth = GAME_WINDOW_WIDTH;
-        bitmapInfo->bmiHeader.biHeight = GAME_WINDOW_HEIGHT;
-        bitmapInfo->bmiHeader.biPlanes = 1;
-        bitmapInfo->bmiHeader.biCompression = 0;
-        backBuffer->LockRect(&lockedRect, NULL, 0);
-        bytesPerRow = 0;
-        for (y = GAME_WINDOW_HEIGHT - 1; y > -1; y--, bytesPerRow++)
-        {
-            dstPixel = (u8 *)((u8 *)bitmapData + stride * bytesPerRow);
-            srcPixel = (u8 *)((u8 *)lockedRect.pBits + lockedRect.Pitch * y);
-            for (x = 0; x < GAME_WINDOW_WIDTH; x++)
-            {
-                *dstPixel = *srcPixel;
-                srcPixel++;
-                dstPixel++;
-                *dstPixel = *srcPixel;
-                srcPixel++;
-                dstPixel++;
-                *dstPixel = *srcPixel;
-                srcPixel += 2;
-                dstPixel++;
-            }
-        }
-        backBuffer->UnlockRect();
-        bitmapFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (bitmapFile == INVALID_HANDLE_VALUE)
-        {
-            break;
-        }
-
-        WriteFile(bitmapFile, &bmfh, sizeof(bmfh), &bytesWritten, NULL);
-        WriteFile(bitmapFile, bitmapInfo, sizeof(bitmapInfo->bmiHeader), &bytesWritten, NULL);
-        WriteFile(bitmapFile, bitmapData, stride * GAME_WINDOW_HEIGHT, &bytesWritten, NULL);
-        CloseHandle(bitmapFile);
-        break;
-    default:
-        // STRING: TH07 0x00496f48
-        g_GameErrorContext.Log("error ? mother.cpp\r\n");
         return TRUE;
     }
-    SAFE_RELEASE(backBuffer);
+    RendererReadPixels(pixels, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
+
+    bitmapInfo = (BITMAPINFO *)ZUN_ALLOC(sizeof(BITMAPINFO));
+    if (!bitmapInfo)
+    {
+        g_GameErrorContext.Log(TH_LOG_BITMAP_ALLOC_FAIL);
+        free(pixels);
+        return TRUE;
+    }
+
+    memset(bitmapInfo, 0, sizeof(BITMAPINFO));
+    stride = 1920;
+    bitmapData = malloc(stride * GAME_WINDOW_HEIGHT);
+    if (!bitmapData)
+    {
+        g_GameErrorContext.Log(TH_LOG_BITMAP_ALLOC_FAIL);
+        ZUN_FREE(bitmapInfo);
+        free(pixels);
+        return TRUE;
+    }
+
+    bmfh.bfSize += stride * GAME_WINDOW_HEIGHT;
+    bitmapInfo->bmiHeader.biBitCount = 24;
+    bitmapInfo->bmiHeader.biSize = 40;
+    bitmapInfo->bmiHeader.biWidth = GAME_WINDOW_WIDTH;
+    bitmapInfo->bmiHeader.biHeight = GAME_WINDOW_HEIGHT;
+    bitmapInfo->bmiHeader.biPlanes = 1;
+    bitmapInfo->bmiHeader.biCompression = 0;
+
+    // BMP rows run bottom-up and are BGR, so flip and reorder while copying.
+    for (y = GAME_WINDOW_HEIGHT - 1; y > -1; y--)
+    {
+        dstPixel = (u8 *)bitmapData + stride * (GAME_WINDOW_HEIGHT - 1 - y);
+        srcPixel = pixels + (size_t)y * GAME_WINDOW_WIDTH * 4;
+        for (x = 0; x < GAME_WINDOW_WIDTH; x++)
+        {
+            dstPixel[0] = srcPixel[2];
+            dstPixel[1] = srcPixel[1];
+            dstPixel[2] = srcPixel[0];
+            srcPixel += 4;
+            dstPixel += 3;
+        }
+    }
+    free(pixels);
+
+    bitmapFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, NULL);
+    if (bitmapFile == INVALID_HANDLE_VALUE)
+    {
+        ZUN_FREE(bitmapInfo);
+        ZUN_FREE(bitmapData);
+        return TRUE;
+    }
+
+    WriteFile(bitmapFile, &bmfh, sizeof(bmfh), &bytesWritten, NULL);
+    WriteFile(bitmapFile, bitmapInfo, sizeof(bitmapInfo->bmiHeader), &bytesWritten,
+              NULL);
+    WriteFile(bitmapFile, bitmapData, stride * GAME_WINDOW_HEIGHT, &bytesWritten,
+              NULL);
+    CloseHandle(bitmapFile);
+
     ZUN_FREE(bitmapInfo);
     ZUN_FREE(bitmapData);
-    return FALSE;
+    return TRUE;
 }
 
 #pragma var_order(configFile, bgm2, bytesRead2, bgm2Data, bgm, bytesRead, bgmData)
@@ -1466,12 +1655,9 @@ i32 Supervisor::IsSlowMode()
 HRESULT Supervisor::EnableFog()
 {
     g_AnmManager->Flush();
-    if (this->fogEnabled != TRUE)
-    {
-        this->fogEnabled = TRUE;
-        return this->d3dDevice->SetRenderState(D3DRS_FOGENABLE, TRUE);
-    }
-
+    // The renderer does not implement per-vertex fog, so this only tracks the flag the
+    // stage code uses to decide whether to bother.
+    this->fogEnabled = TRUE;
     return 0;
 }
 
@@ -1479,20 +1665,8 @@ HRESULT Supervisor::EnableFog()
 HRESULT Supervisor::DisableFog()
 {
     g_AnmManager->Flush();
-    if (this->fogEnabled)
-    {
-        this->fogEnabled = FALSE;
-        return this->d3dDevice->SetRenderState(D3DRS_FOGENABLE, FALSE);
-    }
-
+    this->fogEnabled = FALSE;
     return 0;
-}
-
-// FUNCTION: TH07 0x0043a24e
-void Supervisor::SetRenderState(D3DRENDERSTATETYPE stateType, DWORD state)
-{
-    g_AnmManager->Flush();
-    this->d3dDevice->SetRenderState(stateType, state);
 }
 
 #pragma var_order(time, timeSinceStartup)

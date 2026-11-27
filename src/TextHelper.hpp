@@ -1,12 +1,16 @@
 #pragma once
 
-#include <d3d8.h>
+#include "RenderCompat.hpp"
+#include "RenderTexture.hpp"
 
 #include "inttypes.hpp"
 
+// A description of the pixel layout a text buffer is allocated with. The renderer
+// uploads RGBA8 only, so this is now mostly bookkeeping: the GDI text path still wants
+// to know the bit depth it drew into.
 struct FormatInfo
 {
-    D3DFORMAT format;
+    u32 format;
     i32 bitCount;
     u32 alphaMask;
     u32 redMask;
@@ -18,10 +22,10 @@ struct TextHelper
 {
     TextHelper();
     ~TextHelper();
-    bool AllocateBufferWithFallback(i32 width, i32 height, D3DFORMAT format);
-    bool CopyTextToSurface(IDirect3DSurface8 *surface);
+    bool AllocateBufferWithFallback(i32 width, i32 height, u32 format);
+    bool CopyTextToSurface(SurfaceHandle *surface);
     static void CreateTextBuffer();
-    FormatInfo *GetFormatInfo(D3DFORMAT format);
+    FormatInfo *GetFormatInfo(u32 format);
     bool InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight, i32 someFlag);
     bool ReleaseBuffer();
     static void ReleaseTextBuffer();
@@ -29,10 +33,10 @@ struct TextHelper
                                         i32 spriteHeight, i32 fontHeight,
                                         i32 fontWidth, D3DCOLOR textColor,
                                         u32 outlineType, char *string,
-                                        IDirect3DTexture8 *outTexture);
-    bool TryAllocateBuffer(i32 width, i32 height, D3DFORMAT format);
+                                        TextureHandle *outTexture);
+    bool TryAllocateBuffer(i32 width, i32 height, u32 format);
 
-    D3DFORMAT GetFormat()
+    u32 GetFormat()
     {
         return this->format;
     }
@@ -47,7 +51,7 @@ struct TextHelper
         return this->height;
     }
 
-    D3DFORMAT format;
+    u32 format;
     i32 width;
     i32 height;
     u32 imageSizeInBytes;

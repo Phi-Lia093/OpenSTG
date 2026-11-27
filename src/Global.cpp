@@ -405,211 +405,29 @@ u32 Controller::SetButtonFromControllerInputs(u16 *outButtons,
     return (inputButtons & mask) != 0 ? (u16)touhouButton : 0;
 }
 
-#pragma var_order(pji, distance, shootPressed, shootPressed2, hr, js, retryCount)
 // FUNCTION: TH07 0x004303f0
 u16 Controller::GetControllerInput(u16 buttons)
 {
-    i32 retryCount;
-    DIJOYSTATE2 js;
-    i32 hr;
-    u32 shootPressed2;
-    u32 shootPressed;
-    u32 distance;
-    JOYINFOEX pji;
-
-    if (!g_Supervisor.controller)
-    {
-        memset(&pji, 0, sizeof(JOYINFOEX));
-        pji.dwSize = sizeof(JOYINFOEX);
-        pji.dwFlags = 255;
-        if (joyGetPosEx(0, &pji))
-        {
-            return buttons;
-        }
-
-        shootPressed = SetButtonFromControllerInputs(
-            &buttons, g_Supervisor.cfg.controllerMapping.shootButton,
-            TH_BUTTON_SHOOT, pji.dwButtons);
-        if (g_Supervisor.cfg.shotSlow)
-        {
-            if (shootPressed != 0)
-            {
-                if (g_AutoFocusTimer < 20)
-                {
-                    g_AutoFocusTimer++;
-                }
-                if (g_AutoFocusTimer >= 10)
-                {
-                    buttons |= TH_BUTTON_FOCUS;
-                }
-            }
-            else
-            {
-                if (g_AutoFocusTimer > 10)
-                {
-                    g_AutoFocusTimer -= 10;
-                    buttons |= TH_BUTTON_FOCUS;
-                }
-                else
-                {
-                    g_AutoFocusTimer = 0;
-                }
-            }
-        }
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.bombButton,
-                                      TH_BUTTON_BOMB, pji.dwButtons);
-        SetButtonFromControllerInputs(
-            &buttons, g_Supervisor.cfg.controllerMapping.focusButton,
-            TH_BUTTON_FOCUS, pji.dwButtons);
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.menuButton,
-                                      TH_BUTTON_MENU, pji.dwButtons);
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.upButton,
-                                      TH_BUTTON_UP, pji.dwButtons);
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.downButton,
-                                      TH_BUTTON_DOWN, pji.dwButtons);
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.leftButton,
-                                      TH_BUTTON_LEFT, pji.dwButtons);
-        SetButtonFromControllerInputs(
-            &buttons, g_Supervisor.cfg.controllerMapping.rightButton,
-            TH_BUTTON_RIGHT, pji.dwButtons);
-        SetButtonFromControllerInputs(&buttons,
-                                      g_Supervisor.cfg.controllerMapping.skipButton,
-                                      TH_BUTTON_SKIP, pji.dwButtons);
-        distance = (g_JoystickCaps.wXmax - g_JoystickCaps.wXmin) / 2 / 2;
-        buttons |= JOYSTICK_MIDPOINT(g_JoystickCaps.wXmin, g_JoystickCaps.wXmax) +
-                               distance <
-                           pji.dwXpos
-                       ? TH_BUTTON_RIGHT
-                       : 0;
-        buttons |= pji.dwXpos < JOYSTICK_MIDPOINT(g_JoystickCaps.wXmin,
-                                                  g_JoystickCaps.wXmax) -
-                                    distance
-                       ? TH_BUTTON_LEFT
-                       : 0;
-        distance = (g_JoystickCaps.wYmax - g_JoystickCaps.wYmin) / 2 / 2;
-        buttons |= JOYSTICK_MIDPOINT(g_JoystickCaps.wYmin, g_JoystickCaps.wYmax) +
-                               distance <
-                           pji.dwYpos
-                       ? TH_BUTTON_DOWN
-                       : 0;
-        buttons |= pji.dwYpos < JOYSTICK_MIDPOINT(g_JoystickCaps.wYmin,
-                                                  g_JoystickCaps.wYmax) -
-                                    distance
-                       ? TH_BUTTON_UP
-                       : 0;
-        return buttons;
-    }
-
-    if (FAILED(hr = g_Supervisor.controller->Poll()))
-    {
-        retryCount = 0;
-        // STRING: TH07 0x00497d80
-        utils::DebugPrint("error : DIERR_INPUTLOST\r\n");
-        hr = g_Supervisor.controller->Acquire();
-        while (hr == DIERR_INPUTLOST)
-        {
-            hr = g_Supervisor.controller->Acquire();
-            // STRING: TH07 0x00497d60
-            utils::DebugPrint("error : DIERR_INPUTLOST %d\r\n", retryCount);
-            retryCount++;
-            if (retryCount >= 400)
-            {
-                return buttons;
-            }
-        }
-        return buttons;
-    }
-
-    memset(&js, 0, sizeof(DIJOYSTATE2));
-    if (FAILED(hr = g_Supervisor.controller->GetDeviceState(0x110, &js)))
-    {
-        return buttons;
-    }
-
-    shootPressed2 = SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.shootButton, 1,
-        js.rgbButtons);
-    if (g_Supervisor.cfg.shotSlow)
-    {
-        if (shootPressed2 != 0)
-        {
-            if (g_AutoFocusTimer < 20)
-            {
-                g_AutoFocusTimer++;
-            }
-            if (g_AutoFocusTimer >= 10)
-            {
-                buttons |= TH_BUTTON_FOCUS;
-            }
-        }
-        else
-        {
-            if (g_AutoFocusTimer > 10)
-            {
-                g_AutoFocusTimer -= 10;
-                buttons |= TH_BUTTON_FOCUS;
-            }
-            else
-            {
-                g_AutoFocusTimer = 0;
-            }
-        }
-    }
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.bombButton,
-        TH_BUTTON_BOMB, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.focusButton,
-        TH_BUTTON_FOCUS, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.menuButton,
-        TH_BUTTON_MENU, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.upButton, TH_BUTTON_UP,
-        js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.downButton,
-        TH_BUTTON_DOWN, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.leftButton,
-        TH_BUTTON_LEFT, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.rightButton,
-        TH_BUTTON_RIGHT, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(
-        &buttons, g_Supervisor.cfg.controllerMapping.skipButton,
-        TH_BUTTON_SKIP, js.rgbButtons);
-    SetButtonFromDirectInputJoystate(&buttons, 7, TH_BUTTON_D, js.rgbButtons);
-    buttons |= js.lX > g_Supervisor.cfg.padAxisX ? TH_BUTTON_RIGHT : 0;
-    buttons |= js.lX < -g_Supervisor.cfg.padAxisX ? TH_BUTTON_LEFT : 0;
-    buttons |= js.lY > g_Supervisor.cfg.padAxisY ? TH_BUTTON_DOWN : 0;
-    buttons |= js.lY < -g_Supervisor.cfg.padAxisY ? TH_BUTTON_UP : 0;
-    return buttons;
+    // DirectInput polling is gone; the SDL gamepad path lives in Supervisor, which
+    // reproduces the same mapping, axis thresholds and shot-slow auto focus.
+    return Supervisor::GetGamepadInput(buttons);
 }
 
 // GLOBAL: TH07 0x0135e218
 static u8 g_ControllerData[32 * 4];
 
-#pragma var_order(joyinfoex, joyButtonBit, joyButtonIndex, hr, dijoystate2, \
-                  diRetryCount)
 // FUNCTION: TH07 0x004309c0
 u8 *Controller::GetControllerState()
 {
-    HRESULT hr;
-    i32 diRetryCount;
-    DIJOYSTATE2 dijoystate2;
     u32 joyButtonIndex;
     u32 joyButtonBit;
     JOYINFOEX joyinfoex;
 
     memset(g_ControllerData, 0, sizeof(g_ControllerData));
+
     if (!g_Supervisor.controller)
     {
+        // No SDL gamepad: fall back to the WinMM joystick, exactly as the original did.
         memset(&joyinfoex, 0, sizeof(JOYINFOEX));
         joyinfoex.dwSize = sizeof(JOYINFOEX);
         joyinfoex.dwFlags = 255;
@@ -629,109 +447,26 @@ u8 *Controller::GetControllerState()
         return g_ControllerData;
     }
 
-    if (FAILED(hr = g_Supervisor.controller->Poll()))
+    // SDL gamepads expose buttons by an abstract index. Map the ones the game cares
+    // about onto the same byte-per-button layout the DirectInput path produced, so
+    // every consumer downstream keeps working unchanged.
+    for (joyButtonIndex = 0; joyButtonIndex < sizeof(g_ControllerData); joyButtonIndex++)
     {
-        diRetryCount = 0;
-        utils::DebugPrint("error : DIERR_INPUTLOST\r\n");
-        hr = g_Supervisor.controller->Acquire();
-        while (hr == DIERR_INPUTLOST)
+        if (SDL_GetGamepadButton(g_Supervisor.controller,
+                                 (SDL_GamepadButton)joyButtonIndex))
         {
-            hr = g_Supervisor.controller->Acquire();
-            diRetryCount++;
-            if (diRetryCount >= 400)
-            {
-                utils::DebugPrint("error : DIERR_INPUTLOST %d\r\n", diRetryCount);
-                return g_ControllerData;
-            }
+            g_ControllerData[joyButtonIndex] = 0x80;
         }
-        return g_ControllerData;
     }
-
-    g_Supervisor.controller->GetDeviceState(sizeof(DIJOYSTATE2),
-                                            &dijoystate2);
-    // ZUN landmine: hr holds the result of Poll, not GetDeviceState
-    if (FAILED(hr))
-    {
-        return g_ControllerData;
-    }
-
-    memcpy(g_ControllerData, dijoystate2.rgbButtons,
-           sizeof(g_ControllerData));
     return g_ControllerData;
 }
 
 // FUNCTION: TH07 0x00430b50
 u16 Controller::GetInput()
 {
-    u8 keyboardState[256];
-
-    u16 buttons = 0;
-
-    if (!g_Supervisor.keyboard)
-    {
-        GetKeyboardState(keyboardState);
-
-        buttons |= KEY_PRESSED(VK_UP, TH_BUTTON_UP);
-        buttons |= KEY_PRESSED(VK_DOWN, TH_BUTTON_DOWN);
-        buttons |= KEY_PRESSED(VK_LEFT, TH_BUTTON_LEFT);
-        buttons |= KEY_PRESSED(VK_RIGHT, TH_BUTTON_RIGHT);
-        buttons |= KEY_PRESSED(VK_NUMPAD8, TH_BUTTON_UP);
-        buttons |= KEY_PRESSED(VK_NUMPAD2, TH_BUTTON_DOWN);
-        buttons |= KEY_PRESSED(VK_NUMPAD4, TH_BUTTON_LEFT);
-        buttons |= KEY_PRESSED(VK_NUMPAD6, TH_BUTTON_RIGHT);
-        buttons |= KEY_PRESSED(VK_NUMPAD7, TH_BUTTON_UP_LEFT);
-        buttons |= KEY_PRESSED(VK_NUMPAD9, TH_BUTTON_UP_RIGHT);
-        buttons |= KEY_PRESSED(VK_NUMPAD1, TH_BUTTON_DOWN_LEFT);
-        buttons |= KEY_PRESSED(VK_NUMPAD3, TH_BUTTON_DOWN_RIGHT);
-        buttons |= KEY_PRESSED(VK_HOME, TH_BUTTON_HOME);
-        buttons |= KEY_PRESSED('D', TH_BUTTON_D);
-        buttons |= KEY_PRESSED('Z', TH_BUTTON_SHOOT);
-        buttons |= KEY_PRESSED('X', TH_BUTTON_BOMB);
-        buttons |= KEY_PRESSED(VK_SHIFT, TH_BUTTON_FOCUS);
-        buttons |= KEY_PRESSED(VK_ESCAPE, TH_BUTTON_MENU);
-        buttons |= KEY_PRESSED(VK_CONTROL, TH_BUTTON_SKIP);
-        buttons |= KEY_PRESSED('Q', TH_BUTTON_Q);
-        buttons |= KEY_PRESSED('S', TH_BUTTON_S);
-        buttons |= KEY_PRESSED('R', TH_BUTTON_RESET);
-        buttons |= KEY_PRESSED(VK_RETURN, TH_BUTTON_ENTER);
-    }
-    else
-    {
-        HRESULT hr = g_Supervisor.keyboard->GetDeviceState(sizeof(keyboardState),
-                                                           keyboardState);
-        buttons = 0;
-        if (hr == DIERR_INPUTLOST)
-        {
-            g_Supervisor.keyboard->Acquire();
-            return GetControllerInput(buttons);
-        }
-        buttons |= KEY_PRESSED(DIK_UP, TH_BUTTON_UP);
-        buttons |= KEY_PRESSED(DIK_DOWN, TH_BUTTON_DOWN);
-        buttons |= KEY_PRESSED(DIK_LEFT, TH_BUTTON_LEFT);
-        buttons |= KEY_PRESSED(DIK_RIGHT, TH_BUTTON_RIGHT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD8, TH_BUTTON_UP);
-        buttons |= KEY_PRESSED(DIK_NUMPAD2, TH_BUTTON_DOWN);
-        buttons |= KEY_PRESSED(DIK_NUMPAD4, TH_BUTTON_LEFT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD6, TH_BUTTON_RIGHT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD7, TH_BUTTON_UP_LEFT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD9, TH_BUTTON_UP_RIGHT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD1, TH_BUTTON_DOWN_LEFT);
-        buttons |= KEY_PRESSED(DIK_NUMPAD3, TH_BUTTON_DOWN_RIGHT);
-        buttons |= KEY_PRESSED(DIK_HOME, TH_BUTTON_HOME);
-        buttons |= KEY_PRESSED(DIK_D, TH_BUTTON_D);
-        buttons |= KEY_PRESSED(DIK_Z, TH_BUTTON_SHOOT);
-        buttons |= KEY_PRESSED(DIK_X, TH_BUTTON_BOMB);
-        buttons |= KEY_PRESSED(DIK_LSHIFT, TH_BUTTON_FOCUS);
-        buttons |= KEY_PRESSED(DIK_RSHIFT, TH_BUTTON_FOCUS);
-        buttons |= KEY_PRESSED(DIK_ESCAPE, TH_BUTTON_MENU);
-        buttons |= KEY_PRESSED(DIK_LCONTROL, TH_BUTTON_SKIP);
-        buttons |= KEY_PRESSED(DIK_RCONTROL, TH_BUTTON_SKIP);
-        buttons |= KEY_PRESSED(DIK_Q, TH_BUTTON_Q);
-        buttons |= KEY_PRESSED(DIK_S, TH_BUTTON_S);
-        buttons |= KEY_PRESSED(DIK_RETURN, TH_BUTTON_ENTER);
-        buttons |= KEY_PRESSED(DIK_R, TH_BUTTON_RESET);
-    }
-    return GetControllerInput(buttons);
+    // Keyboard handling moved to Supervisor, which reads SDL's keyboard state and
+    // builds the same TH_BUTTON_* mask; gamepad state is layered on the same way.
+    return Supervisor::GetInputFrame();
 }
 
 // FUNCTION: TH07 0x004312c0
@@ -869,6 +604,22 @@ i32 FileSystem::WriteDataToFile(const char *filename, const void *out,
     return 0;
 }
 
+// Appends text to a file and flushes it immediately. The original collected messages
+// in memory and only wrote them out when Flush() ran, which is too late if the process
+// dies first; writing as the message is produced means the last line before a crash is
+// still on disk.
+static void AppendToDisk(const char *path, const char *text)
+{
+    FILE *file = fopen(path, "ab");
+    if (!file)
+    {
+        return;
+    }
+    fwrite(text, 1, strlen(text), file);
+    fflush(file);
+    fclose(file);
+}
+
 // FUNCTION: TH07 0x004315f0
 const char *GameErrorContext::Log(const char *fmt, ...)
 {
@@ -908,6 +659,7 @@ const char *GameErrorContext::Fatal(const char *fmt, ...)
     }
     va_end(args);
     this->m_ShowMessageBox = true;
+    AppendToDisk("./fatal.txt", tmp);
     return fmt;
 }
 

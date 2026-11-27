@@ -288,7 +288,7 @@ void AsciiManager::DrawStrings()
                 g_Supervisor.viewport.Y = g_GameManager.arcadeRegionTopLeftPos.y;
                 g_Supervisor.viewport.Width = g_GameManager.arcadeRegionSize.x;
                 g_Supervisor.viewport.Height = g_GameManager.arcadeRegionSize.y;
-                g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+                RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
             }
             else
             {
@@ -296,7 +296,7 @@ void AsciiManager::DrawStrings()
                 g_Supervisor.viewport.Y = 0;
                 g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
                 g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-                g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+                RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
             }
         }
         while (*(u8 *)text != 0)
@@ -801,7 +801,7 @@ void PauseMenu::OnDraw()
         g_Supervisor.viewport.Y = (u32)g_GameManager.arcadeRegionTopLeftPos.y;
         g_Supervisor.viewport.Width = (u32)g_GameManager.arcadeRegionSize.x;
         g_Supervisor.viewport.Height = (u32)g_GameManager.arcadeRegionSize.y;
-        g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+        RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
         if (g_Supervisor.hasLockableBackbuffer && this->curState != PAUSE_MENU_STATE_INIT)
         {
             // This is indeed an entire AnmVm on the stack
@@ -1033,7 +1033,7 @@ void RetryMenu::OnDraw()
         g_Supervisor.viewport.Y = g_GameManager.arcadeRegionTopLeftPos.y;
         g_Supervisor.viewport.Width = g_GameManager.arcadeRegionSize.x;
         g_Supervisor.viewport.Height = g_GameManager.arcadeRegionSize.y;
-        g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+        RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
         if (g_Supervisor.hasLockableBackbuffer &&
             (this->curState != RETRY_MENU_STATE_INIT || this->numFrames > 2))
         {
@@ -1077,7 +1077,7 @@ void AsciiManager::DrawPopups()
     {
         g_Supervisor.DisableFog();
     }
-    g_Supervisor.SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+    RendererSetZWrite(false);
 
     for (i = 0; i < ARRAY_SIZE_SIGNED(this->popups); i++, popup++)
     {

@@ -2181,7 +2181,7 @@ u32 ResultScreen::OnDraw(ResultScreen *arg)
     g_Supervisor.viewport.Y = 0;
     g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
     g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     g_AnmManager->CopySurfaceToBackBuffer(0, 0, 0, 0, 0);
     for (i = 0; i < ARRAY_SIZE_SIGNED(arg->vms); i++, vm++)
     {

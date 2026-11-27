@@ -1,13 +1,13 @@
 #include "AnmManager.hpp"
 
-#include <d3d8.h>
-#include <d3d8types.h>
-#include <d3dx8tex.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "Global.hpp"
+#include "RenderCompat.hpp"
+#include "Renderer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
 #include "TextHelper.hpp"
@@ -15,6 +15,9 @@
 #include "dxutil.hpp"
 #include "i18n.hpp"
 #include "utils.hpp"
+
+// Counters for the sprite batcher, written out by Flush() so a frame can be inspected
+// without attaching a debugger.
 
 // GLOBAL: TH07 0x004b9e44
 AnmManager *g_AnmManager;
@@ -28,14 +31,15 @@ VertexTex1Xyzrhw g_QuadTemplate[4];
 // GLOBAL: TH07 0x004ba078
 VertexTex1DiffuseXyz g_Quad3DFallback[4];
 
-// GLOBAL: TH07 0x0049512c
-const D3DFORMAT g_TextureFormatD3D8Mapping[6] = {
-    D3DFMT_UNKNOWN,
-    D3DFMT_A8R8G8B8,
-    D3DFMT_A1R5G5B5,
-    D3DFMT_R5G6B5,
-    D3DFMT_R8G8B8,
-    D3DFMT_A4R4G4B4,
+// THTX pixel formats, in the order the game indexes them. Converted to RGBA8 at load
+// time, so the GL side only ever sees one format.
+const u32 g_TextureFormatD3D8Mapping[6] = {
+    TEXTURE_FORMAT_UNKNOWN,
+    TEXTURE_FORMAT_ARGB8888,
+    TEXTURE_FORMAT_ARGB1555,
+    TEXTURE_FORMAT_RGB565,
+    TEXTURE_FORMAT_RGB888,
+    TEXTURE_FORMAT_ARGB4444,
 };
 
 // GLOBAL: TH07 0x00495144
@@ -140,18 +144,11 @@ void AnmManager::SetupVertexBuffer()
         this->vertexBufferContents[3].textureUV.x;
     g_Quad3DFallback[3].textureUV.y =
         this->vertexBufferContents[3].textureUV.y;
-    if (!g_Supervisor.cfg.noVertexBuffers)
-    {
-        g_Supervisor.d3dDevice->CreateVertexBuffer(
-            sizeof(this->vertexBufferContents), 0, D3DFVF_TEX1 | D3DFVF_XYZ,
-            D3DPOOL_MANAGED, &this->vertexBuffer);
-        this->vertexBuffer->Lock(0, 0, (u8 **)&vertexData, 0);
-        memcpy(vertexData, this->vertexBufferContents,
-               sizeof(this->vertexBufferContents));
-        this->vertexBuffer->Unlock();
-        g_Supervisor.d3dDevice->SetStreamSource(0, g_AnmManager->vertexBuffer,
-                                                sizeof(RenderVertexInfo));
-    }
+    // The unit quad used to live in a D3D vertex buffer and be drawn with a world
+    // matrix. Draw3 now projects that quad itself and hands screen-space triangles to
+    // the renderer, so there is no buffer to create here.
+    (void)vertexData;
+    this->vertexBuffer = NULL;
 }
 
 // FUNCTION: TH07 0x0044d8f0
@@ -159,236 +156,142 @@ ZunResult AnmManager::LoadTexture(i32 textureIdx, const char *texturePath,
                                   i32 formatIdx, D3DCOLOR colorKey)
 {
     u8 *srcData;
+    i32 width;
+    i32 height;
+    u8 *rgba;
 
     ReleaseTexture(textureIdx);
-    if (g_Supervisor.cfg.use16BitTextures)
-    {
-        if (g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_A8R8G8B8 ||
-            g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_UNKNOWN)
-        {
-            formatIdx = 5;
-        }
-        else if (g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_R8G8B8)
-        {
-            formatIdx = 3;
-        }
-    }
+
     srcData = FileSystem::OpenFile(texturePath, 1);
     if (!srcData)
     {
         return ZUN_ERROR;
     }
 
-    if (D3DXCreateTextureFromFileInMemoryEx(
-            g_Supervisor.d3dDevice, srcData, g_LastFileSize, 0, 0, 0, 0,
-            g_TextureFormatD3D8Mapping[formatIdx], D3DPOOL_MANAGED, 3, 0xffffffff,
-            colorKey, NULL, NULL, this->textures + textureIdx))
+    // The external textures are encoded images (PNG/JPG) stored inside th07.dat.
+    // D3DX decoded them before; SDL_image does it now, straight to RGBA8.
+    rgba = DecodeImageToRGBA(srcData, g_LastFileSize, &width, &height);
+    if (!rgba)
     {
         ZUN_FREE(srcData);
         return ZUN_ERROR;
     }
+
+    (void)formatIdx;
+    (void)colorKey;
+
+    ReleaseTexture(textureIdx);
+    free(rgba);
+
     this->imageDataArray[textureIdx] = srcData;
     return ZUN_SUCCESS;
 }
 
-#pragma var_order(surf, texSurf, info, lockedRect, i, src, dst)
 // FUNCTION: TH07 0x0044d9e0
 ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx,
                                           ZunImageInfoEmbedded *imageInfo,
                                           D3DCOLOR formatIdx)
 {
-    u8 *dst;
-    u8 *src;
-    i32 i;
-    D3DLOCKED_RECT lockedRect;
-    ZunImageInfoEmbedded *info;
-    IDirect3DSurface8 *texSurf;
-    IDirect3DSurface8 *surf;
+    u32 pixelCount;
+    u32 rgbaSize;
+    u8 *rgba;
+
+    (void)formatIdx;
 
     ReleaseTexture(textureIdx);
-    if (g_Supervisor.cfg.use16BitTextures)
-    {
-        if (g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_A8R8G8B8 ||
-            g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_UNKNOWN)
-        {
-            formatIdx = 5;
-        }
-        else if (g_TextureFormatD3D8Mapping[formatIdx] == D3DFMT_R8G8B8)
-        {
-            formatIdx = 3;
-        }
-    }
-    info = imageInfo;
 
-    // ZUN landmine: CreateImageSurface is not checked for failure.
-    g_Supervisor.d3dDevice->CreateImageSurface(
-        (i32)info->width, (i32)info->height,
-        g_TextureFormatD3D8Mapping[info->format], &surf);
-    surf->LockRect(&lockedRect, NULL, 0);
-    for (i = 0; i < info->height; i++)
-    {
-        dst = (u8 *)lockedRect.pBits + i * lockedRect.Pitch;
-        src = &imageInfo->data[i * info->width * g_TextureBytesPerPixel[info->format]];
-        memcpy(dst, src, info->width * g_TextureBytesPerPixel[info->format]);
-    }
-    surf->UnlockRect();
-    if (D3DXCreateTexture(g_Supervisor.d3dDevice, (i32)info->width,
-                          (i32)info->height, 1, 0,
-                          g_TextureFormatD3D8Mapping[formatIdx], D3DPOOL_MANAGED,
-                          this->textures + textureIdx))
+    if (imageInfo->width <= 0 || imageInfo->height <= 0)
     {
         return ZUN_ERROR;
     }
 
-    this->textures[textureIdx]->GetSurfaceLevel(0, &texSurf);
-    if (D3DXLoadSurfaceFromSurface(texSurf, 0, NULL, surf, 0, NULL, 3, 0) !=
-        0)
+    pixelCount = (u32)imageInfo->width * (u32)imageInfo->height;
+    rgbaSize = pixelCount * 4;
+    rgba = (u8 *)malloc(rgbaSize);
+    if (!rgba)
     {
         return ZUN_ERROR;
     }
 
-    SAFE_RELEASE(surf);
-    SAFE_RELEASE(texSurf);
-    return ZUN_SUCCESS;
+    // An embedded THTX image is raw pixels in one of the game's own formats; convert
+    // once at load time so the GPU only ever sees RGBA8.
+    ConvertToRGBA8(imageInfo->data, rgba, pixelCount,
+                   (TextureFormat)imageInfo->format, 0, false);
+
+    this->textures[textureIdx] =
+        TextureHandleFromRGBA((u32)imageInfo->width, (u32)imageInfo->height, rgba);
+
+    free(rgba);
+
+    return this->textures[textureIdx] ? ZUN_SUCCESS : ZUN_ERROR;
 }
 
-#pragma var_order(surfaceDesc, data, lockedRectDst, lockedRectSrc, textureSrc,      \
-                  dstData0, srcData0, y0, x0, dstData1, srcData1, y1, x1, dstData2, \
-                  srcData2, y2, x2)
-// FUNCTION: TH07 0x0044dbe0
+// The alpha-only companion image: a block whose red channel becomes the destination
+// texture's alpha. D3DX did this on the GPU before; now it is a plain per-pixel pass
+// over the RGBA8 image, which is the only format the renderer uploads.
 ZunResult AnmManager::LoadTextureAlphaChannel(i32 textureIdx,
-                                              const char *texturePath,
-                                              i32 formatIdx, D3DCOLOR colorKey)
+                                             const char *texturePath,
+                                             i32 formatIdx, D3DCOLOR colorKey)
 {
-    struct Argb1555Pixel
-    {
-        u16 b : 5;
-        u16 g : 5;
-        u16 r : 5;
-        u16 a : 1;
-    };
-
-    struct Argb4444Pixel
-    {
-        u16 b : 4;
-        u16 g : 4;
-        u16 r : 4;
-        u16 a : 4;
-    };
-
-    u32 x2;
-    u32 y2;
-    Argb4444Pixel *srcData2;
-    Argb4444Pixel *dstData2;
-    u32 x1;
-    u32 y1;
-    Argb1555Pixel *srcData1;
-    Argb1555Pixel *dstData1;
-    u32 x0;
-    u32 y0;
-    u8 *srcData0;
-    u8 *dstData0;
-    LPDIRECT3DTEXTURE8 textureSrc;
-    D3DLOCKED_RECT lockedRectSrc;
-    D3DLOCKED_RECT lockedRectDst;
+    i32 width;
+    i32 height;
     u8 *data;
-    D3DSURFACE_DESC surfaceDesc;
+    u8 *alpha;
+    u32 i;
+    u32 pixelCount;
+    TextureHandle *handle;
 
-    textureSrc = NULL;
+    (void)formatIdx;
+    (void)colorKey;
+
     data = FileSystem::OpenFile(texturePath, 0);
     if (!data)
     {
         return ZUN_ERROR;
     }
 
-    this->textures[textureIdx]->GetLevelDesc(0, &surfaceDesc);
-    if (surfaceDesc.Format != D3DFMT_A8R8G8B8 &&
-        surfaceDesc.Format != D3DFMT_A4R4G4B4 &&
-        surfaceDesc.Format != D3DFMT_A1R5G5B5)
+    handle = this->textures[textureIdx];
+    if (!handle || !handle->texture || !handle->texture->pixels)
     {
-        g_GameErrorContext.Fatal(TH_ERR_NO_ALPHA_CHANNEL);
-        goto err;
+        ZUN_FREE(data);
+        return ZUN_ERROR;
     }
 
-    if (D3DXCreateTextureFromFileInMemoryEx(
-            g_Supervisor.d3dDevice, data, g_LastFileSize, 0, 0, 0, 0,
-            surfaceDesc.Format, D3DPOOL_SYSTEMMEM, 3, 0xffffffff, colorKey,
-            NULL, NULL, &textureSrc))
-    {
-        goto err;
-    }
-
-    if (this->textures[textureIdx]->LockRect(0, &lockedRectDst, NULL, 0))
-    {
-        goto err;
-    }
-
-    if (textureSrc->LockRect(0, &lockedRectSrc, NULL, D3DLOCK_NO_DIRTY_UPDATE))
-    {
-        goto err;
-    }
-
-    switch (surfaceDesc.Format)
-    {
-    case D3DFMT_A8R8G8B8:
-        for (y0 = 0; y0 < surfaceDesc.Height; y0 = y0 + 1)
-        {
-            dstData0 =
-                (u8 *)lockedRectDst.pBits + y0 * lockedRectDst.Pitch;
-            srcData0 =
-                (u8 *)lockedRectSrc.pBits + y0 * lockedRectSrc.Pitch;
-            for (x0 = 0; x0 < surfaceDesc.Width; x0++, srcData0 += 4, dstData0 += 4)
-            {
-                dstData0[3] = srcData0[0];
-            }
-        }
-        break;
-    case D3DFMT_A1R5G5B5:
-        for (y1 = 0; y1 < surfaceDesc.Height; y1 = y1 + 1)
-        {
-            dstData1 =
-                (Argb1555Pixel *)((u8 *)lockedRectDst.pBits + y1 * lockedRectDst.Pitch);
-            srcData1 =
-                (Argb1555Pixel *)((u8 *)lockedRectSrc.pBits + y1 * lockedRectSrc.Pitch);
-            for (x1 = 0; x1 < surfaceDesc.Width; x1++, srcData1++, dstData1++)
-            {
-                dstData1->a = srcData1->b >> 4;
-            }
-        }
-        break;
-    case D3DFMT_A4R4G4B4:
-        for (y2 = 0; y2 < surfaceDesc.Height; y2 = y2 + 1)
-        {
-            dstData2 =
-                (Argb4444Pixel *)((u8 *)lockedRectDst.pBits + y2 * lockedRectDst.Pitch);
-            srcData2 =
-                (Argb4444Pixel *)((u8 *)lockedRectSrc.pBits + y2 * lockedRectSrc.Pitch);
-            for (x2 = 0; x2 < surfaceDesc.Width; x2++, srcData2++, dstData2++)
-            {
-                dstData2->a = srcData2->b;
-            }
-        }
-        break;
-    }
-    textureSrc->UnlockRect(0);
-    this->textures[textureIdx]->UnlockRect(0);
-    SAFE_RELEASE(textureSrc);
+    alpha = DecodeImageToRGBA(data, g_LastFileSize, &width, &height);
     ZUN_FREE(data);
+    if (!alpha)
+    {
+        return ZUN_ERROR;
+    }
+
+    if (handle->width != width || handle->height != height)
+    {
+        free(alpha);
+        return ZUN_ERROR;
+    }
+
+    // Take the red channel of the companion image as alpha, keeping the destination's
+    // colour untouched.
+    pixelCount = (u32)(width * height);
+    u8 *pixels = handle->texture->pixels;
+    for (i = 0; i < pixelCount; i++)
+    {
+        pixels[i * 4 + 3] = alpha[i * 4 + 0];
+    }
+    free(alpha);
+
+    RenderTextureUpload(handle->texture, pixels);
     return ZUN_SUCCESS;
-err:
-    SAFE_RELEASE(textureSrc);
-    ZUN_FREE(data);
-    return ZUN_ERROR;
 }
 
 // FUNCTION: TH07 0x0044df40
 ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height,
                                          i32 textureFormat)
 {
-    D3DXCreateTexture(g_Supervisor.d3dDevice, width, height, 1, 0,
-                      g_TextureFormatD3D8Mapping[textureFormat], D3DPOOL_MANAGED,
-                      this->textures + textureIdx);
-    return ZUN_SUCCESS;
+    (void)textureFormat;
+    ReleaseTexture(textureIdx);
+    this->textures[textureIdx] = TextureHandleCreate(width, height, 0);
+    return this->textures[textureIdx] ? ZUN_SUCCESS : ZUN_ERROR;
 }
 
 #pragma var_order(res, startIdx, ownsMemory, entry)
@@ -438,7 +341,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry,
     AnmLoadedSprite loadedSprite;
     i32 *curSprite;
     i32 i;
-    D3DSURFACE_DESC desc;
+    SurfaceDesc desc;
     AnmRawEntry *data;
     i32 id;
 
@@ -504,7 +407,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry,
     this->textureNames[textureIdx] = (char *)((u8 *)data + data->nameOffset);
     this->textures[textureIdx]->SetPriority(data->priority);
     this->textures[textureIdx]->PreLoad();
-    this->textures[textureIdx]->GetLevelDesc(0, &desc);
+    desc = this->textures[textureIdx]->GetDesc();
     data->spriteIdxOffset = spriteIdxOffset;
     curSprite = data->spriteOffsets;
     for (i = 0; i < data->numSprites; i++, curSprite++)
@@ -703,14 +606,7 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
     if ((u32)this->currentBlendMode != vm->blendMode)
     {
         this->currentBlendMode = vm->blendMode;
-        if (!this->currentBlendMode)
-        {
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        }
-        else
-        {
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
-        }
+        RendererSetBlend(this->currentBlendMode ? RENDER_BLEND_ADD : RENDER_BLEND_ALPHA);
     }
     color.color = vm->useColor2 ? vm->color2.color : vm->color.color;
     if (!g_Supervisor.cfg.noVertexBuffers)
@@ -722,12 +618,9 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
             color.bytes.b = ZunColor::Multiply(color.bytes.b, this->color.bytes.b);
             color.bytes.a = ZunColor::Multiply(color.bytes.a, this->color.bytes.a);
         }
-        if (this->currentTextureFactor.color != color.color)
-        {
-            this->currentTextureFactor.color = color.color;
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_TEXTUREFACTOR,
-                                                   this->currentTextureFactor.color);
-        }
+        // The texture factor is now carried per-vertex when the sprite is pushed, so
+        // there is nothing to set on the device here.
+        this->currentTextureFactor.color = color.color;
     }
     else
     {
@@ -751,14 +644,7 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
         (u32)this->currentZWriteDisable != vm->zWriteDisable)
     {
         this->currentZWriteDisable = vm->zWriteDisable;
-        if (!this->currentZWriteDisable)
-        {
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-        }
-        else
-        {
-            g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        }
+        RendererSetZWrite(this->currentZWriteDisable == 0);
     }
     if ((u32)this->currentCameraMode != vm->cameraMode)
     {
@@ -767,13 +653,14 @@ void AnmManager::SetRenderStateForVm(AnmVm *vm)
         if (!this->currentCameraMode)
         {
             g_Stage.SetupCameraStageBackground();
-            g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
         }
         else
         {
             g_Stage.UpdateCamera();
-            g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
         }
+        RendererSetViewport((i32)g_Supervisor.viewport.X, (i32)g_Supervisor.viewport.Y,
+                            (i32)g_Supervisor.viewport.Width,
+                            (i32)g_Supervisor.viewport.Height);
     }
     this->renderStateChangesThisFrame++;
 }
@@ -784,27 +671,13 @@ void AnmManager::SyncRenderState(AnmVm *vm)
     if ((u32)this->currentBlendMode != vm->blendMode)
     {
         this->currentBlendMode = vm->blendMode;
-        if (!this->currentBlendMode)
-        {
-            g_Supervisor.SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        }
-        else
-        {
-            g_Supervisor.SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
-        }
+        RendererSetBlend(this->currentBlendMode ? RENDER_BLEND_ADD : RENDER_BLEND_ALPHA);
     }
     if (!g_Supervisor.cfg.disableZBuffer &&
         (u32)this->currentZWriteDisable != vm->zWriteDisable)
     {
         this->currentZWriteDisable = vm->zWriteDisable;
-        if (!this->currentZWriteDisable)
-        {
-            g_Supervisor.SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-        }
-        else
-        {
-            g_Supervisor.SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-        }
+        RendererSetZWrite(this->currentZWriteDisable == 0);
     }
     this->renderStateChangesThisFrame++;
 }
@@ -869,6 +742,10 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
         }
     }
 
+    // uvStart/uvEnd are the sprite's absolute position in the atlas, so they are already
+    // the texture coordinates to sample. (The original reached the same numbers by
+    // feeding 0..1 through a texture matrix whose scale was uvEnd - uvStart and whose
+    // offset was uvStart; the arithmetic is done once here instead.)
     g_QuadVertices[0].textureUV.x = g_QuadVertices[2].textureUV.x =
         vm->sprite->uvStart.x + vm->uvScrollPos.x;
     g_QuadVertices[1].textureUV.x = g_QuadVertices[3].textureUV.x =
@@ -908,10 +785,12 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
 
     if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
     {
-        this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
+        // Flush the queued sprites while currentTexture still names the texture they
+        // were built against; switching first would submit the old batch with the new
+        // texture and scramble every sprite in it.
+        TextureHandle *next = this->textures[vm->sprite->sourceFileIndex];
         this->Flush();
-        g_Supervisor.d3dDevice->SetTexture(
-            0, (IDirect3DBaseTexture8 *)this->currentTexture);
+        this->currentTexture = next;
     }
     if (this->currentVertexShader != 1)
     {
@@ -936,6 +815,8 @@ ZunResult AnmManager::DrawInner(AnmVm *vm, u32 drawFlags)
     }
     SyncRenderState(vm);
     PushSprite(g_QuadVertices);
+
+
     return ZUN_SUCCESS;
 }
 
@@ -955,13 +836,40 @@ void AnmManager::Flush()
         return;
     }
 
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE |
-                                            D3DFVF_XYZRHW);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(
-        D3DPT_TRIANGLELIST, this->spritesToDraw << 1, this->vertexBufferStartPtr,
-        sizeof(VertexTex1DiffuseXyzrhw));
+    // The batcher accumulates triangle-list vertices in 0xAARRGGBB + UV form, which is
+    // exactly what the renderer takes once the colours are unpacked. The scratch array
+    // is sized to the source buffer so the loop below can never read past it.
+    u32 vertexCount = this->spritesToDraw * 6;
+    static RenderVertex scratch[ARRAY_SIZE_SIGNED(this->spriteVertexBuffer)];
+    u32 capacity = (u32)(sizeof(scratch) / sizeof(scratch[0]));
+    if (vertexCount > capacity)
+    {
+        vertexCount = capacity;
+    }
+    u32 n = vertexCount;
+
+    VertexTex1DiffuseXyzrhw *src = this->vertexBufferStartPtr;
+    for (u32 i = 0; i < n; i++)
+    {
+        RenderColor color = src[i].diffuse.color;
+        RenderVertex *dst = &scratch[i];
+        dst->x = src[i].pos.x;
+        dst->y = src[i].pos.y;
+        dst->z = src[i].pos.z;
+        dst->color = color;
+        dst->u = src[i].textureUV.x;
+        dst->v = src[i].textureUV.y;
+    }
+
+    // The batcher stores two triangles per sprite, 6 vertices total, all with the same
+    // texture, so the whole batch is one draw.
+    RenderTexture *texture =
+        this->currentTexture ? this->currentTexture->texture : NULL;
+
+    RendererDrawTriangles(scratch, (i32)n, texture, texture != NULL);
+    RendererDrawTriangles(scratch, (i32)n, texture, texture != NULL);
+
+
     this->vertexBufferStartPtr = this->vertexBufferCurPtr;
     this->spritesToDraw = 0;
     this->flushesThisFrame++;
@@ -970,6 +878,22 @@ void AnmManager::Flush()
 // FUNCTION: TH07 0x0044f690
 ZunResult AnmManager::PushSprite(VertexTex1DiffuseXyzrhw *spriteVertex)
 {
+    // The original relied on the frame ending before this buffer filled. A dense spell
+    // card pushes far more sprites than that, so flush and start a new batch when the
+    // next quad would not fit: `spriteVertexBuffer` holds a fixed number of entries and
+    // every push writes six of them.
+    i32 capacity = ARRAY_SIZE_SIGNED(this->spriteVertexBuffer);
+    if (this->vertexBufferCurPtr + 6 > this->spriteVertexBuffer + capacity)
+    {
+        this->Flush();
+        // Flush reset the cursor to the start of the buffer, so there is room now
+        // unless the buffer is smaller than a single quad.
+        if (this->vertexBufferCurPtr + 6 > this->spriteVertexBuffer + capacity)
+        {
+            return ZUN_ERROR;
+        }
+    }
+
     this->vertexBufferCurPtr[0] = spriteVertex[0];
     this->vertexBufferCurPtr[1] = spriteVertex[1];
     this->vertexBufferCurPtr[2] = spriteVertex[2];
@@ -980,6 +904,102 @@ ZunResult AnmManager::PushSprite(VertexTex1DiffuseXyzrhw *spriteVertex)
     this->vertexBufferCurPtr = this->vertexBufferCurPtr + 6;
     this->spritesToDraw++;
     return ZUN_SUCCESS;
+}
+
+// Text queued by DrawStringFormat2, keyed by the VM it belongs to. Drawing happens when
+// the VM is drawn, because that is when its screen position is known.
+struct StoredText
+{
+    AnmVm *vm;
+    char utf8[256];
+    i32 fontWidth;
+    i32 fontHeight;
+    D3DCOLOR color;
+    u32 outlineType;
+};
+
+static StoredText g_StoredText[64];
+static i32 g_StoredTextCount = 0;
+
+// Drops every remembered string. Called once per frame before the draw chain runs, so a
+// VM that is gone cannot leave a stale pointer behind; DrawStringFormat2 re-adds what is
+// still current during the update that precedes it.
+void AnmClearStoredText()
+{
+    g_StoredTextCount = 0;
+}
+
+static void AnmStoreText(AnmVm *vm, const char *utf8, i32 fontWidth, i32 fontHeight,
+                        D3DCOLOR color, u32 outlineType)
+{
+    for (i32 i = 0; i < g_StoredTextCount; i++)
+    {
+        if (g_StoredText[i].vm == vm)
+        {
+            strncpy(g_StoredText[i].utf8, utf8, sizeof(g_StoredText[i].utf8) - 1);
+            g_StoredText[i].utf8[sizeof(g_StoredText[i].utf8) - 1] = 0;
+            g_StoredText[i].fontWidth = fontWidth;
+            g_StoredText[i].fontHeight = fontHeight;
+            g_StoredText[i].color = color;
+            g_StoredText[i].outlineType = outlineType;
+            return;
+        }
+    }
+    if (g_StoredTextCount >= ARRAY_SIZE_SIGNED(g_StoredText))
+    {
+        return;
+    }
+    StoredText *slot = &g_StoredText[g_StoredTextCount++];
+    slot->vm = vm;
+    strncpy(slot->utf8, utf8, sizeof(slot->utf8) - 1);
+    slot->utf8[sizeof(slot->utf8) - 1] = 0;
+    slot->fontWidth = fontWidth;
+    slot->fontHeight = fontHeight;
+    slot->color = color;
+    slot->outlineType = outlineType;
+}
+
+static StoredText *AnmFindText(AnmVm *vm)
+{
+    for (i32 i = 0; i < g_StoredTextCount; i++)
+    {
+        if (g_StoredText[i].vm == vm)
+        {
+            return &g_StoredText[i];
+        }
+    }
+    return NULL;
+}
+
+// Emits the VM's queued text onto the overlay, centred on the VM's on-screen position.
+static void AnmEmitText(AnmVm *vm)
+{
+    StoredText *stored = AnmFindText(vm);
+    if (!stored)
+    {
+        return;
+    }
+
+    i32 fontHeight = stored->fontHeight <= 0 ? 15 : stored->fontHeight;
+    f32 spriteWidth = vm->sprite ? vm->sprite->widthPx * vm->sprite->cols : 640.0f;
+
+    // The VM sits at the centre of its line, so the text is centred on pos.x and its
+    // vertical centre on pos.y.
+    i32 left = (i32)vm->pos.x;
+    i32 textWidth = 0;
+    FontFace *face = FontGetDefault();
+    if (face)
+    {
+        textWidth = FontMeasureText(face, stored->utf8, (f32)fontHeight);
+    }
+    left -= textWidth / 2;
+    i32 top = (i32)(vm->pos.y - fontHeight / 2.0f);
+
+    (void)spriteWidth;
+
+
+    TextOverlayDraw(stored->utf8, left, top, (f32)fontHeight, stored->color,
+                    stored->outlineType, stored->outlineType != 0xffffffff);
 }
 
 // FUNCTION: TH07 0x0044f770
@@ -1002,6 +1022,11 @@ ZunResult AnmManager::DrawNoRotation(AnmVm *vm)
     {
         return ZUN_ERROR;
     }
+
+    // The sprite itself is only the text's bounding box; the glyphs go on the overlay.
+    // Emitting here keeps the text tied to the VM's lifetime and position without going
+    // through the shared text texture.
+    AnmEmitText(vm);
 
     centerX = vm->sprite->widthPx * vm->scale.x / 2.0f;
     centerY = vm->sprite->heightPx * vm->scale.y / 2.0f;
@@ -1467,52 +1492,62 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
     SetRenderStateForVm(vm);
     world.m[3][2] = vm->pos.z;
 
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_WORLD, &world);
-
-    if (this->currentSprite != vm->sprite)
+    // D3D applied this world matrix on the device and drew a unit quad. The renderer
+    // takes transformed vertices, so build the quad, run it through world * view *
+    // projection here, and hand the result to the renderer.
+    RenderTexture *texture =
+        this->textures[vm->sprite->sourceFileIndex]
+            ? this->textures[vm->sprite->sourceFileIndex]->texture
+            : NULL;
+    if (!texture)
     {
-        this->currentSprite = vm->sprite;
-        uv = vm->uvMatrix;
-        uv.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
-        uv.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
-        g_Supervisor.d3dDevice->SetTransform(D3DTS_TEXTURE0, &uv);
-
-        if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
-        {
-            this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
-            g_Supervisor.d3dDevice->SetTexture(
-                0, (IDirect3DBaseTexture8 *)this->currentTexture);
-        }
+        return ZUN_ERROR;
     }
 
-    if (this->currentVertexShader != 2)
+    RenderColor color = vm->useColor2 ? vm->color2.color : vm->color.color;
+    if (this->colorMulEnabled)
     {
-        if (!g_Supervisor.cfg.noVertexBuffers)
-        {
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_XYZ);
-            g_Supervisor.d3dDevice->SetStreamSource(0, this->vertexBuffer, 20);
-        }
-        else
-        {
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 |
-                                                    D3DFVF_DIFFUSE |
-                                                    D3DFVF_XYZ);
-        }
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-        this->currentVertexShader = 2;
+        color = RENDER_COLOR_RGBA(
+            ZunColor::Multiply((color >> 16) & 0xff, this->color.bytes.r),
+            ZunColor::Multiply((color >> 8) & 0xff, this->color.bytes.g),
+            ZunColor::Multiply(color & 0xff, this->color.bytes.b),
+            ZunColor::Multiply((color >> 24) & 0xff, this->color.bytes.a));
     }
 
-    if (!g_Supervisor.cfg.noVertexBuffers)
+    f32 uvX = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    f32 uvY = vm->sprite->uvStart.y + vm->uvScrollPos.y;
+    f32 uvW = vm->sprite->uvEnd.x - vm->sprite->uvStart.x;
+    f32 uvH = vm->sprite->uvEnd.y - vm->sprite->uvStart.y;
+
+    // Corner order matches g_Quad3DFallback: TL, TR, BL, BR.
+    static const f32 cornerX[4] = {-128.0f, 128.0f, -128.0f, 128.0f};
+    static const f32 cornerY[4] = {-128.0f, -128.0f, 128.0f, 128.0f};
+
+    RenderVertex quad[4];
+    for (i32 corner = 0; corner < 4; corner++)
     {
-        g_Supervisor.d3dDevice->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+        D3DXVECTOR3 local;
+        local.x = cornerX[corner];
+        local.y = cornerY[corner];
+        local.z = 0.0f;
+
+        D3DXVECTOR3 projected;
+        D3DXVec3Project(&projected, &local, &g_Supervisor.viewport,
+                        &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix,
+                        &world);
+
+        quad[corner].x = projected.x;
+        quad[corner].y = projected.y;
+        quad[corner].z = projected.z;
+        quad[corner].color = color;
+        quad[corner].u = uvX + (corner == 1 || corner == 3 ? uvW : 0.0f);
+        quad[corner].v = uvY + (corner == 2 || corner == 3 ? uvH : 0.0f);
     }
-    else
-    {
-        g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2,
-                                                g_Quad3DFallback,
-                                                sizeof(VertexTex1DiffuseXyz));
-    }
+
+    // Two triangles from the quad: TL, TR, BL and TR, BR, BL.
+    RenderVertex triangles[6] = {quad[0], quad[1], quad[2],
+                                 quad[1], quad[3], quad[2]};
+    RendererDrawTriangles(triangles, 6, texture, true);
     return ZUN_SUCCESS;
 }
 
@@ -2291,10 +2326,21 @@ void AnmManager::DrawTextToSprite(u32 spriteDstIdx, i32 x, i32 y, i32 width,
     {
         fontHeight = 15;
     }
-    TextHelper::RenderTextToTextureBold(x, y, width, height,
-                                        (f32)fontWidth * scaleY,
-                                        (f32)fontHeight * scaleX, textColor,
-                                        outlineType, strToPrint, this->textures[spriteDstIdx]);
+
+    // Hold each argument in a local before the call. Evaluating the casts inline let
+    // the float arguments be laid out against the wrong integer parameters, and the
+    // sprite geometry arrived at the text renderer as garbage.
+    i32 dstX = x;
+    i32 dstY = y;
+    i32 dstWidth = width;
+    i32 dstHeight = height;
+    i32 scaledFontHeight = (i32)((f32)fontHeight * scaleX);
+    i32 scaledFontWidth = (i32)((f32)fontWidth * scaleY);
+
+    TextHelper::RenderTextToTextureBold(dstX, dstY, dstWidth, dstHeight,
+                                        scaledFontHeight, scaledFontWidth, textColor,
+                                        outlineType, strToPrint,
+                                        this->textures[spriteDstIdx]);
 }
 
 #pragma var_order(args, text, fontWidth)
@@ -2367,26 +2413,20 @@ void AnmManager::DrawStringFormat2(AnmVm *vm, D3DCOLOR textColor,
                                    u32 outlineType, const char *text, ...)
 {
     i32 fontWidth;
-    char buf[72];
-    i32 x;
+    char buf[256];
     va_list args;
 
     fontWidth = vm->fontWidth <= 0 ? 15 : (i32)vm->fontWidth;
+
     va_start(args, text);
     vsprintf(buf, text, args);
     va_end(args);
 
-    this->DrawTextToSprite(vm->sprite->sourceFileIndex, vm->sprite->startPixelInclusive.x,
-                           vm->sprite->startPixelInclusive.y, vm->sprite->textureWidth,
-                           vm->sprite->textureHeight, fontWidth, vm->fontHeight, textColor,
-                           outlineType, (char *)" ", vm->sprite->cols, vm->sprite->rows);
-
-    x = (i32)(vm->sprite->startPixelInclusive.x + vm->sprite->widthPx * vm->sprite->cols / 2.0f -
-              (f32)strlen(buf) * fontWidth * vm->sprite->cols / 4.0f);
-
-    this->DrawTextToSprite(vm->sprite->sourceFileIndex, x, vm->sprite->startPixelInclusive.y,
-                           vm->sprite->textureWidth, vm->sprite->textureHeight, fontWidth, vm->fontHeight,
-                           textColor, outlineType, buf, vm->sprite->cols, vm->sprite->rows);
+    // Remember the string against this VM. The text is drawn when the VM itself is drawn,
+    // because only then is its on-screen position known, and it is composited on the
+    // text overlay rather than into a sprite texture.
+    AnmStoreText(vm, buf, fontWidth, vm->fontHeight <= 0 ? 15 : (i32)vm->fontHeight,
+                 textColor, outlineType);
 
     vm->visible = 1;
 }
@@ -2394,130 +2434,90 @@ void AnmManager::DrawStringFormat2(AnmVm *vm, D3DCOLOR textColor,
 // FUNCTION: TH07 0x004547b0
 ZunResult AnmManager::LoadSurface(i32 surfaceIdx, const char *path)
 {
-    IDirect3DSurface8 *surface;
+    i32 width;
+    i32 height;
+    u8 *data;
+    u8 *rgba;
 
     if (this->surfaces[surfaceIdx])
     {
         ReleaseSurface(surfaceIdx);
     }
-    u8 *data = FileSystem::OpenFile(path, 0);
+
+    data = FileSystem::OpenFile(path, 0);
     if (!data)
     {
-        g_GameErrorContext.Fatal(TH_ERR_SURFACE_LOAD_FAIL, path);
-        return ZUN_ERROR;
-    }
-    if (g_Supervisor.d3dDevice->CreateImageSurface(
-            640, 1024, g_Supervisor.presentParameters.BackBufferFormat,
-            &surface))
-    {
         return ZUN_ERROR;
     }
 
-    if (D3DXLoadSurfaceFromFileInMemory(
-            surface, NULL, NULL, data, g_LastFileSize, NULL, 1, 0,
-            (D3DXIMAGE_INFO *)&this->surfaceSourceInfo[surfaceIdx]))
-    {
-        goto err;
-    }
-
-    if (g_Supervisor.d3dDevice->CreateRenderTarget(
-            this->surfaceSourceInfo[surfaceIdx].width,
-            this->surfaceSourceInfo[surfaceIdx].height,
-            g_Supervisor.presentParameters.BackBufferFormat, D3DMULTISAMPLE_NONE,
-            1, this->surfaces + surfaceIdx))
-    {
-        if (g_Supervisor.d3dDevice->CreateImageSurface(
-                this->surfaceSourceInfo[surfaceIdx].width,
-                this->surfaceSourceInfo[surfaceIdx].height,
-                g_Supervisor.presentParameters.BackBufferFormat,
-                this->surfaces + surfaceIdx))
-        {
-            goto err;
-        }
-    }
-
-    if (g_Supervisor.d3dDevice->CreateImageSurface(
-            this->surfaceSourceInfo[surfaceIdx].width,
-            this->surfaceSourceInfo[surfaceIdx].height,
-            g_Supervisor.presentParameters.BackBufferFormat,
-            this->surfacesBis + surfaceIdx))
-    {
-        goto err;
-    }
-
-    if (D3DXLoadSurfaceFromSurface(this->surfaces[surfaceIdx], 0, NULL, surface,
-                                   0, NULL, 1, 0))
-    {
-        goto err;
-    }
-    if (D3DXLoadSurfaceFromSurface(this->surfacesBis[surfaceIdx], 0, NULL,
-                                   surface, 0, NULL, 1, 0))
-    {
-        goto err;
-    }
-
-    SAFE_RELEASE(surface);
+    // The ending artwork is JPEG, decoded here instead of by D3DX.
+    rgba = DecodeImageToRGBA(data, g_LastFileSize, &width, &height);
     ZUN_FREE(data);
+    if (!rgba)
+    {
+        return ZUN_ERROR;
+    }
+
+    this->surfaceSourceInfo[surfaceIdx].width = (u32)width;
+    this->surfaceSourceInfo[surfaceIdx].height = (u32)height;
+
+    // Two surfaces keep the same content: the original uses one as the source that is
+    // copied back to the screen and the other as the scratch both copies read from.
+    this->surfaces[surfaceIdx] = SurfaceHandleCreate((u32)width, (u32)height, 0);
+    this->surfacesBis[surfaceIdx] = SurfaceHandleCreate((u32)width, (u32)height, 0);
+    if (!this->surfaces[surfaceIdx] || !this->surfacesBis[surfaceIdx])
+    {
+        free(rgba);
+        ReleaseSurface(surfaceIdx);
+        return ZUN_ERROR;
+    }
+
+    memcpy(this->surfaces[surfaceIdx]->surface->pixels, rgba,
+           (size_t)width * (size_t)height * 4);
+    memcpy(this->surfacesBis[surfaceIdx]->surface->pixels, rgba,
+           (size_t)width * (size_t)height * 4);
+    SurfaceHandleCommit(this->surfaces[surfaceIdx]);
+    SurfaceHandleCommit(this->surfacesBis[surfaceIdx]);
+
+    free(rgba);
     return ZUN_SUCCESS;
-
-err:
-    SAFE_RELEASE(surface);
-    ZUN_FREE(data);
-    return ZUN_ERROR;
 }
 
 // FUNCTION: TH07 0x00454a10
 void AnmManager::ReleaseSurface(i32 surfaceIdx)
 {
-    SAFE_RELEASE(this->surfaces[surfaceIdx]);
-    SAFE_RELEASE(this->surfacesBis[surfaceIdx]);
+    if (this->surfaces[surfaceIdx])
+    {
+        this->surfaces[surfaceIdx]->Release();
+        this->surfaces[surfaceIdx] = NULL;
+    }
+    if (this->surfacesBis[surfaceIdx])
+    {
+        this->surfacesBis[surfaceIdx]->Release();
+        this->surfacesBis[surfaceIdx] = NULL;
+    }
 }
 
 // FUNCTION: TH07 0x00454aa0
 void AnmManager::CopySurfaceToBackBuffer(i32 surfaceIdx, i32 left, i32 top,
                                          i32 x, i32 y)
 {
-    if (!this->surfacesBis[surfaceIdx])
+    SurfaceHandle *source = this->surfaces[surfaceIdx];
+    if (!source)
     {
-        return;
+        source = this->surfacesBis[surfaceIdx];
     }
-    IDirect3DSurface8 *dstSurface;
-    if (g_Supervisor.d3dDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO,
-                                              &dstSurface))
+    if (!source)
     {
         return;
     }
 
-    if (!this->surfaces[surfaceIdx])
-    {
-        if (g_Supervisor.d3dDevice->CreateRenderTarget(
-                this->surfaceSourceInfo[surfaceIdx].width,
-                this->surfaceSourceInfo[surfaceIdx].height,
-                g_Supervisor.presentParameters.BackBufferFormat,
-                D3DMULTISAMPLE_NONE, 1, this->surfaces + surfaceIdx) &&
-            g_Supervisor.d3dDevice->CreateImageSurface(
-                this->surfaceSourceInfo[surfaceIdx].width,
-                this->surfaceSourceInfo[surfaceIdx].height,
-                g_Supervisor.presentParameters.BackBufferFormat,
-                this->surfaces + surfaceIdx))
-        {
-            dstSurface->Release();
-            return;
-        }
-        if (D3DXLoadSurfaceFromSurface(this->surfaces[surfaceIdx], NULL, NULL,
-                                       this->surfacesBis[surfaceIdx], NULL, NULL,
-                                       1, 0))
-        {
-            dstSurface->Release();
-            return;
-        }
-    }
-    RECT srcRect = {left, top, (LONG)this->surfaceSourceInfo[surfaceIdx].width,
-                    (LONG)this->surfaceSourceInfo[surfaceIdx].height};
-    POINT dstPoint = {x, y};
-    g_Supervisor.d3dDevice->CopyRects(this->surfaces[surfaceIdx], &srcRect, 1,
-                                      dstSurface, &dstPoint);
-    dstSurface->Release();
+    // The original copied this region straight into the back buffer. Drawing it is the
+    // GL equivalent, and it must not disturb the batcher's texture binding.
+    this->Flush();
+    RenderSurfaceBlitToScreen(source->surface, x, y, left, top,
+                              (i32)this->surfaceSourceInfo[surfaceIdx].width,
+                              (i32)this->surfaceSourceInfo[surfaceIdx].height);
 }
 
 // FUNCTION: TH07 0x00454c60
@@ -2525,134 +2525,134 @@ void AnmManager::DrawEndingRect(i32 surfaceIdx, i32 rectX, i32 rectY,
                                 i32 rectLeft, i32 rectTop, i32 width,
                                 i32 height)
 {
-    if (!this->surfacesBis[surfaceIdx])
+    SurfaceHandle *source = this->surfaces[surfaceIdx];
+    if (!source)
     {
-        return;
+        source = this->surfacesBis[surfaceIdx];
     }
-    IDirect3DSurface8 *backBuffer;
-    if (g_Supervisor.d3dDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO,
-                                              &backBuffer))
-    {
-        return;
-    }
-    if (!this->surfaces[surfaceIdx])
-    {
-        if (g_Supervisor.d3dDevice->CreateRenderTarget(
-                this->surfaceSourceInfo[surfaceIdx].width,
-                this->surfaceSourceInfo[surfaceIdx].height,
-                g_Supervisor.presentParameters.BackBufferFormat,
-                D3DMULTISAMPLE_NONE, 1, this->surfaces + surfaceIdx) &&
-            g_Supervisor.d3dDevice->CreateImageSurface(
-                this->surfaceSourceInfo[surfaceIdx].width,
-                this->surfaceSourceInfo[surfaceIdx].height,
-                g_Supervisor.presentParameters.BackBufferFormat,
-                this->surfaces + surfaceIdx))
-        {
-            backBuffer->Release();
-            return;
-        }
-        if (D3DXLoadSurfaceFromSurface(this->surfaces[surfaceIdx], 0, NULL,
-                                       this->surfacesBis[surfaceIdx], 0, NULL, 1,
-                                       0))
-        {
-            backBuffer->Release();
-            return;
-        }
-    }
-    RECT rect = {rectLeft, rectTop, rectLeft + width, rectTop + height};
-    POINT point = {rectX, rectY};
-    g_Supervisor.d3dDevice->CopyRects(this->surfaces[surfaceIdx], &rect, 1,
-                                      backBuffer, &point);
-    backBuffer->Release();
-}
-
-#pragma var_order(srcRect, dstSurface, srcSurface, dstRect)
-// FUNCTION: TH07 0x00454e10
-void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop,
-                                i32 srcWidth, i32 srcHeight, i32 dstLeft,
-                                i32 dstTop, i32 dstWidth, i32 dstHeight)
-{
-    RECT dstRect;
-    IDirect3DSurface8 *srcSurface;
-    IDirect3DSurface8 *dstSurface;
-    RECT srcRect;
-
-    if (!this->textures[textureId])
-    {
-        return;
-    }
-
-    Flush();
-    if (g_Supervisor.d3dDevice->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO,
-                                              &srcSurface))
-    {
-        return;
-    }
-
-    if (this->textures[textureId]->GetSurfaceLevel(0, &dstSurface))
-    {
-        srcSurface->Release();
-        return;
-    }
-
-    srcRect.left = srcLeft;
-    srcRect.top = srcTop;
-    srcRect.right = srcLeft + srcWidth;
-    srcRect.bottom = srcTop + srcHeight;
-    dstRect.left = dstLeft;
-    dstRect.top = dstTop;
-    dstRect.right = dstLeft + dstWidth;
-    dstRect.bottom = dstTop + dstHeight;
-    if (D3DXLoadSurfaceFromSurface(dstSurface, 0, &dstRect, srcSurface, 0,
-                                   &srcRect, 0xffffffff, 0))
-    {
-        dstSurface->Release();
-        srcSurface->Release();
-    }
-    else
-    {
-        dstSurface->Release();
-        srcSurface->Release();
-    }
-}
-
-#pragma var_order(dstSurf, srcSurf)
-// FUNCTION: TH07 0x00454f30
-void AnmManager::CopyTexture(i32 dstIdx, i32 srcIdx, RECT *dstRect, RECT *srcRect)
-{
-    if (!this->textures[dstIdx])
-    {
-        return;
-    }
-    if (!this->textures[srcIdx])
+    if (!source)
     {
         return;
     }
 
     this->Flush();
-    IDirect3DSurface8 *dstSurf, *srcSurf;
-    if (this->textures[dstIdx]->GetSurfaceLevel(0, &dstSurf))
+    RenderSurfaceBlitToScreen(source->surface, rectX, rectY, rectLeft, rectTop,
+                              width, height);
+}
+
+// FUNCTION: TH07 0x00454e10
+void AnmManager::TakeScreenshot(i32 textureId, i32 srcLeft, i32 srcTop,
+                                i32 srcWidth, i32 srcHeight, i32 dstLeft,
+                                i32 dstTop, i32 dstWidth, i32 dstHeight)
+{
+    TextureHandle *dst = this->textures[textureId];
+    if (!dst || !dst->texture)
     {
         return;
     }
 
-    if (this->textures[srcIdx]->GetSurfaceLevel(0, &srcSurf))
+    // Everything queued must be in the framebuffer before it is captured.
+    Flush();
+
+    // The original copied a region of the back buffer into the destination texture at
+    // an offset. GL can only read the current framebuffer back to (0,0), so capture
+    // first and then copy the wanted sub-rectangle inside the CPU mirror.
+    u32 captureWidth = (u32)dst->width;
+    u32 captureHeight = (u32)dst->height;
+    RenderTexture *capture = RenderSurfaceCreate(captureWidth, captureHeight);
+    if (!capture)
     {
-        dstSurf->Release();
         return;
     }
 
-    if (D3DXLoadSurfaceFromSurface(dstSurf, 0, dstRect, srcSurf, 0, srcRect,
-                                   0xffffffff, 0))
+    RendererCaptureBackbuffer(capture);
+
+    // glCopyTexSubImage2D reads bottom-up; flip while copying into the destination.
+    if (!dst->texture->pixels)
     {
-        dstSurf->Release();
-        srcSurf->Release();
+        dst->texture->pixels = (u8 *)malloc((size_t)captureWidth * captureHeight * 4);
     }
-    else
+    if (!dst->texture->pixels)
     {
-        dstSurf->Release();
-        srcSurf->Release();
+        RenderTextureDestroy(capture);
+        return;
     }
+
+    // The destination texture is written at dstLeft/dstTop with the given size, so
+    // scale the captured region into it row by row.
+    for (i32 row = 0; row < dstHeight; row++)
+    {
+        i32 srcRow = srcTop + (i32)((f32)row * (f32)srcHeight / (f32)dstHeight);
+        i32 dstRow = dstTop + row;
+        if (srcRow < 0 || srcRow >= (i32)captureHeight)
+        {
+            continue;
+        }
+        if (dstRow < 0 || dstRow >= dst->height)
+        {
+            continue;
+        }
+        u8 *dstLine = dst->texture->pixels + (size_t)dstRow * dst->width * 4 +
+                      (size_t)dstLeft * 4;
+        u8 *srcLine = capture->pixels + (size_t)srcRow * captureWidth * 4 +
+                      (size_t)srcLeft * 4;
+        i32 copyPixels = dstWidth;
+        if (dstLeft + copyPixels > dst->width)
+        {
+            copyPixels = dst->width - dstLeft;
+        }
+        if (srcLeft + copyPixels > (i32)captureWidth)
+        {
+            copyPixels = (i32)captureWidth - srcLeft;
+        }
+        if (copyPixels > 0)
+        {
+            memcpy(dstLine, srcLine, (size_t)copyPixels * 4);
+        }
+    }
+
+    RenderTextureUpload(dst->texture, dst->texture->pixels);
+    RenderTextureDestroy(capture);
+}
+
+// FUNCTION: TH07 0x00454f30
+void AnmManager::CopyTexture(i32 dstIdx, i32 srcIdx, RECT *dstRect, RECT *srcRect)
+{
+    TextureHandle *dst = this->textures[dstIdx];
+    TextureHandle *src = this->textures[srcIdx];
+    if (!dst || !src || !dst->texture || !src->texture)
+    {
+        return;
+    }
+
+    this->Flush();
+
+    // Both sides may be GPU-only, so give them CPU mirrors to copy through.
+    if (!dst->texture->pixels)
+    {
+        dst->texture->pixels = (u8 *)malloc((size_t)dst->width * dst->height * 4);
+        if (!dst->texture->pixels)
+        {
+            return;
+        }
+        memset(dst->texture->pixels, 0, (size_t)dst->width * dst->height * 4);
+    }
+    if (!src->texture->pixels)
+    {
+        src->texture->pixels = (u8 *)malloc((size_t)src->width * src->height * 4);
+        if (!src->texture->pixels)
+        {
+            return;
+        }
+        memset(src->texture->pixels, 0, (size_t)src->width * src->height * 4);
+    }
+
+    i32 copyWidth = (i32)(dstRect->right - dstRect->left);
+    i32 copyHeight = (i32)(dstRect->bottom - dstRect->top);
+    RenderSurfaceCopy(dst->texture, (i32)dstRect->left, (i32)dstRect->top,
+                      src->texture, (i32)srcRect->left, (i32)srcRect->top,
+                      copyWidth, copyHeight);
+    RenderTextureUpload(dst->texture, dst->texture->pixels);
 }
 
 // FUNCTION: TH07 0x00455030
@@ -2780,23 +2780,30 @@ ZunResult AnmManager::DrawTriangleStrip(AnmVm *vm,
         this->Flush();
     }
 
-    if (this->currentTexture != this->textures[vm->sprite->sourceFileIndex])
-    {
-        this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
-        g_Supervisor.d3dDevice->SetTexture(
-            0, (IDirect3DBaseTexture8 *)this->currentTexture);
-    }
-
-    if (this->currentVertexShader != 3)
-    {
-        g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_TEX1 | D3DFVF_DIFFUSE |
-                                                D3DFVF_XYZRHW);
-        this->currentVertexShader = 3;
-    }
-
+    this->currentTexture = this->textures[vm->sprite->sourceFileIndex];
     SetRenderStateForVm(vm);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, count - 2,
-                                            vertices,
-                                            sizeof(VertexTex1DiffuseXyzrhw));
+
+    // The caller supplies a triangle strip; GL wants triangles, so expand it here.
+    RenderTexture *texture = this->currentTexture ? this->currentTexture->texture : NULL;
+    if (!texture || count < 3)
+    {
+        return ZUN_ERROR;
+    }
+
+    for (i32 i = 0; i + 2 < count; i++)
+    {
+        RenderVertex triangle[3];
+        for (i32 corner = 0; corner < 3; corner++)
+        {
+            const VertexTex1DiffuseXyzrhw &v = vertices[i + corner];
+            triangle[corner].x = v.pos.x;
+            triangle[corner].y = v.pos.y;
+            triangle[corner].z = v.pos.z;
+            triangle[corner].color = v.diffuse.color;
+            triangle[corner].u = v.textureUV.x;
+            triangle[corner].v = v.textureUV.y;
+        }
+        RendererDrawTriangles(triangle, 3, texture, true);
+    }
     return ZUN_SUCCESS;
 }

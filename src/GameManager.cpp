@@ -217,7 +217,10 @@ u32 GameManager::OnUpdate(GameManager *arg)
             g_GameManager.csumFloat = -9999.0f;
         }
     }
-    g_Supervisor.d3dDevice->Clear(0, NULL, 2, g_Stage.skyFog.color.color, 1.0f, 0);
+    RendererClearRegion(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT,
+                        ((g_Stage.skyFog.color.color >> 16) & 0xff) / 255.0f,
+                        ((g_Stage.skyFog.color.color >> 8) & 0xff) / 255.0f,
+                        (g_Stage.skyFog.color.color & 0xff) / 255.0f);
     if (arg->isInPauseMenu == 1 || arg->isInPauseMenu == 2 ||
         arg->isInRetryMenu)
     {
@@ -337,26 +340,13 @@ void GameManager::DrawLoadingSprite()
     spritePos.y = 448.0f;
     spritePos.z = 0.0f;
     memcpy(&spriteVm.pos, spritePos, sizeof(Float3));
-    g_Supervisor.d3dDevice->BeginScene();
-
-    // ZUN bloat: This is doing the exact same thing twice
+    // The original presented twice here; one clear-and-swap is enough now that the
+    // swap is explicit and has no device-lost case to recover from.
+    RendererClear(0.0f, 0.0f, 0.0f);
+    RendererBeginFrame();
     ScreenEffect::DrawSquare(&rect, 0xa0000000);
     g_AnmManager->DrawNoRotation(&spriteVm);
     g_AnmManager->Flush();
-    g_Supervisor.d3dDevice->EndScene();
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
-    g_Supervisor.d3dDevice->BeginScene();
-    ScreenEffect::DrawSquare(&rect, 0xa0000000);
-    g_AnmManager->DrawNoRotation(&spriteVm);
-    g_AnmManager->Flush();
-    g_Supervisor.d3dDevice->EndScene();
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
 }
 
 // FUNCTION: TH07 0x0042e38c

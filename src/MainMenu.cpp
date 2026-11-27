@@ -2298,7 +2298,7 @@ ZunResult MainMenu::ActualAddedCallback()
             g_AnmManager->ClearFrameState();
             g_AnmManager->SetCameraMode(255);
             g_AnmManager->SetColor(0x80808080);
-            g_Supervisor.d3dDevice->BeginScene();
+            RendererBeginFrame();
             g_AnmManager->CopySurfaceToBackBuffer(0, 0, 0, 0, 0);
             if (frameCount < 60)
             {
@@ -2321,11 +2321,6 @@ ZunResult MainMenu::ActualAddedCallback()
                 ScreenEffect::DrawSquare(&fadeOutRect, fadeOutColor.color);
             }
             g_CurFrameRawInput = Controller::GetInput();
-            g_Supervisor.d3dDevice->EndScene();
-            if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-            {
-                g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-            }
             if (frameCount >= 120 && frameCount < 840 &&
                 WAS_PRESSED_RAW(TH_BUTTON_SELECTMENU | TH_BUTTON_BOMB))
             {
@@ -2427,7 +2422,6 @@ ZunResult MainMenu::Release()
 // FUNCTION: TH07 0x0045c546
 ZunResult MainMenu::DeletedCallback(MainMenu *arg)
 {
-    g_Supervisor.d3dDevice->ResourceManagerDiscardBytes(0);
     for (i32 i = ANM_FILE_TITLE_0; i <= ANM_FILE_TITLE_9; i++)
     {
         g_AnmManager->ReleaseAnm(i);

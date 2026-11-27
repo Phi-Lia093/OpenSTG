@@ -8,17 +8,11 @@
 // FUNCTION: TH07 0x0044a460
 void ScreenEffect::Clear(D3DCOLOR color)
 {
-    // ZUN bloat: This is doing the exact same thing twice
-    g_Supervisor.d3dDevice->Clear(0, NULL, 3, color, 1.0f, 0);
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
-    g_Supervisor.d3dDevice->Clear(0, NULL, 3, color, 1.0f, 0);
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-    }
+    // The original cleared and presented twice to make the colour visible on hardware
+    // that would otherwise skip the first frame. One clear and one present is enough
+    // now that the swap is explicit.
+    RendererClear(((color >> 16) & 0xff) / 255.0f, ((color >> 8) & 0xff) / 255.0f,
+                  (color & 0xff) / 255.0f);
 }
 
 // FUNCTION: TH07 0x0044a520
@@ -34,7 +28,7 @@ void ScreenEffect::SetViewport(D3DCOLOR color)
     g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
     g_Supervisor.viewport.MinZ = 0.0f;
     g_Supervisor.viewport.MaxZ = 1.0f;
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     Clear(color);
 }
 
@@ -76,34 +70,24 @@ void ScreenEffect::DrawSquare(ZunRect *rect, D3DCOLOR color)
         vertices[1].diffuse.color =
             vertices[2].diffuse.color =
                 vertices[3].diffuse.color = color;
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    // Untextured, vertex-coloured fill. The renderer picks the untextured shader path
+    // because no texture is passed, which is exactly the SELECTARG1 setup below.
     if (!g_Supervisor.cfg.disableZBuffer)
     {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        RendererSetZWrite(false);
     }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices,
-                                            sizeof(VertexDiffuseXyzrhw));
+    RendererSetBlend(RENDER_BLEND_ALPHA);
+    RendererDrawColoredQuad(rect->left, rect->top, rect->right, rect->bottom, color,
+                            color, color, color);
+
+    // The batcher's cached state no longer matches what was just drawn, so invalidate
+    // it the way the original did.
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
     g_AnmManager->SetTexture(NULL);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 }
 
 // FUNCTION: TH07 0x0044aa20
@@ -124,34 +108,20 @@ void ScreenEffect::DrawColoredQuad(ZunRect *rect, D3DCOLOR topLeft,
     vertices[1].diffuse.color = topRight;
     vertices[2].diffuse.color = bottomLeft;
     vertices[3].diffuse.color = bottomRight;
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
     if (!g_Supervisor.cfg.disableZBuffer)
     {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, 0);
+        RendererSetZWrite(false);
     }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices,
-                                            sizeof(VertexDiffuseXyzrhw));
+    RendererSetBlend(RENDER_BLEND_ALPHA);
+    RendererDrawColoredQuad(rect->left, rect->top, rect->right, rect->bottom, topLeft,
+                            topRight, bottomLeft, bottomRight);
+
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
     g_AnmManager->SetTexture(NULL);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 }
 
 // FUNCTION: TH07 0x0044adf0
@@ -168,7 +138,7 @@ u32 ScreenEffect::OnDrawFullScreenColor(ScreenEffect *arg)
     g_Supervisor.viewport.Y = 0;
     g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
     g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     ScreenEffect::DrawSquare(&rect, arg->alpha << 24 | arg->effectArg1);
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }

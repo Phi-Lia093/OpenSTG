@@ -7,6 +7,7 @@
 // clang-format keeps on ordering gameerrorcontext below anmmanager
 // clang-format off
 #include "Global.hpp"
+#include "Renderer.hpp"
 #include "AnmManager.hpp"
 #include "BulletManager.hpp"
 #include "GameManager.hpp"
@@ -36,7 +37,6 @@ struct GameWindow
     static i32 CreateGameWindow(HINSTANCE hInstance);
     static char *FormatCapability(const char *capabilityName, u32 capabilityFlags,
                                   u32 mask, char *buf);
-    static void FormatD3DCapabilities(D3DCAPS8 *caps, char *buf);
     static i32 InitD3dInterface();
     static i32 InitD3dRendering();
     static void Present();
@@ -47,7 +47,7 @@ struct GameWindow
     static LRESULT __stdcall WindowProc(HWND hWnd, u32 uMsg, WPARAM wParam,
                                         LPARAM lParam);
 
-    HWND window;
+    SDL_Window *window;
     ZunBool isAppClosing;
     ZunBool isAppActive;
     ZunBool isAppInactive;
@@ -127,7 +127,8 @@ start:
         goto stop;
     }
 
-    g_SoundPlayer.InitializeDSound(g_GameWindow.window);
+    // SDL audio does not need the window handle the way DirectSound did.
+    g_SoundPlayer.InitializeDSound(NULL);
     Controller::GetJoystickCaps();
     Controller::ResetKeyboard();
     g_AnmManager = ZUN_NEW(AnmManager, "SprtCtrlInf");
@@ -150,36 +151,42 @@ start:
     g_GameWindow.curFrame = -30;
     while (!g_GameWindow.isAppClosing)
     {
-        if (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
+        SDL_Event event;
+        ZunBool hadEvent = FALSE;
+
+        // Drain the event queue. The device-lost dance the original performed has no
+        // equivalent: an OpenGL context is not revocable the way a D3D device is.
+        while (SDL_PollEvent(&event))
         {
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
-        }
-        else
-        {
-            d3dDeviceStatus = g_Supervisor.d3dDevice->TestCooperativeLevel();
-            if (d3dDeviceStatus == D3D_OK)
+            hadEvent = TRUE;
+            if (event.type == SDL_EVENT_QUIT)
             {
-                res = g_GameWindow.Render();
-                if (res != RENDER_RESULT_KEEP_RUNNING)
-                {
-                    break;
-                }
-                g_Supervisor.deviceNotReset = 0;
+                g_GameWindow.isAppClosing = TRUE;
             }
-            else if (d3dDeviceStatus == D3DERR_DEVICENOTRESET)
+            else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
             {
-                g_AnmManager->ReleaseSurfaces();
-                if (g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters) !=
-                    0)
-                {
-                    break;
-                }
-                GameWindow::ResetRenderState();
-                g_Supervisor.renderSkipFrames = 3;
-                g_Supervisor.deviceNotReset = 1;
+                g_GameWindow.isAppActive = FALSE;
+                g_GameWindow.isAppInactive = TRUE;
+            }
+            else if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED)
+            {
+                g_GameWindow.isAppActive = TRUE;
+                g_GameWindow.isAppInactive = FALSE;
             }
         }
+
+        if (g_GameWindow.isAppClosing)
+        {
+            break;
+        }
+
+        res = g_GameWindow.Render();
+        if (res != RENDER_RESULT_KEEP_RUNNING)
+        {
+            break;
+        }
+        g_Supervisor.deviceNotReset = 0;
+        (void)hadEvent;
     }
 cleanup:
     if (g_GameManager.plst.magic != 0)
@@ -194,17 +201,14 @@ stop:
     g_SoundPlayer.Release();
     ZUN_DELETE(g_AnmManager);
 
-    if (g_Supervisor.d3dDevice)
+    if (g_Renderer.context)
     {
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
+        SDL_GL_DestroyContext(g_Renderer.context);
+        g_Renderer.context = NULL;
     }
-    SAFE_RELEASE(g_Supervisor.d3dDevice);
-    SAFE_RELEASE(g_Supervisor.d3dIface);
     if (g_GameWindow.window)
     {
-        ShowWindow(g_GameWindow.window, 0);
-        MoveWindow(g_GameWindow.window, 0, 0, 0, 0, 0);
-        DestroyWindow(g_GameWindow.window);
+        SDL_DestroyWindow(g_GameWindow.window);
         g_GameWindow.window = NULL;
     }
     ShowCursor(1);
@@ -301,13 +305,6 @@ void GameWindow::Present()
     char snapshotPath[252];
     i32 i;
 
-    if (FAILED(g_Supervisor.d3dDevice->Present(NULL, NULL, NULL, NULL)))
-    {
-        g_AnmManager->ReleaseSurfaces();
-        g_Supervisor.d3dDevice->Reset(&g_Supervisor.presentParameters);
-        ResetRenderState();
-        g_Supervisor.renderSkipFrames = 2;
-    }
     g_AnmManager->TakeScreenshotIfRequested();
     if (WAS_PRESSED_RAW(TH_BUTTON_HOME))
     {
@@ -331,6 +328,50 @@ void GameWindow::Present()
     {
         g_Supervisor.renderSkipFrames--;
     }
+
+    // This is where the finished frame reaches the screen. The original ended here with
+    // IDirect3DDevice8::Present; the swap replaces it, and without it nothing drawn
+    // this frame is ever displayed.
+    RendererSwap();
+
+    // Hold the frame at 60 Hz. The original relied on Present blocking for the vertical
+    // blank, which does not happen on every driver -- on this machine the loop runs at
+    // 120 fps. Sleeping until the next 1/60 s boundary reproduces the intended rate
+    // regardless of what the driver does.
+    {
+        static LARGE_INTEGER lastFrameTime;
+        static LARGE_INTEGER perfFrequency;
+
+        if (perfFrequency.QuadPart == 0)
+        {
+            QueryPerformanceFrequency(&perfFrequency);
+            QueryPerformanceCounter(&lastFrameTime);
+        }
+        else
+        {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+
+            // Time left until the next frame is due, in performance-counter ticks.
+            LONGLONG frameTicks = perfFrequency.QuadPart / 60;
+            LONGLONG elapsed = now.QuadPart - lastFrameTime.QuadPart;
+            LONGLONG remaining = frameTicks - elapsed;
+
+            if (remaining > 0)
+            {
+                // Sleep takes milliseconds, so convert and leave the sub-millisecond
+                // remainder to be absorbed by the next frame.
+                DWORD sleepMs = (DWORD)(remaining * 1000 / perfFrequency.QuadPart);
+                if (sleepMs > 0)
+                {
+                    Sleep(sleepMs);
+                }
+                QueryPerformanceCounter(&now);
+            }
+
+            lastFrameTime.QuadPart = now.QuadPart;
+        }
+    }
 }
 
 #pragma var_order(chainRes, perfCounter, perfDiff, curTime, timeDiff)
@@ -343,48 +384,64 @@ RenderResult GameWindow::Render()
     // The x86 API writes two DWORDs; the target local is DWORD-aligned.
     struct CounterSample { DWORD LowPart; LONG HighPart; } perfCounter;
     i32 chainRes;
+    ZunBool clearedThisFrame = FALSE;
 
     if (!this->isAppActive)
     {
         return RENDER_RESULT_KEEP_RUNNING;
     }
 
-    if (this->curFrame == 0)
+    // The frame body below is re-entered with `goto begin_loop` while the frame's time
+    // budget allows, exactly as the original did. Note that curFrame starts negative
+    // and the loop runs whenever it is at or below the frameskip setting.
+begin_loop:
     {
-    begin_loop:
-        if ((i32)g_Supervisor.cfg.frameskipConfig <= (i32)this->curFrame)
+        // Start every frame from a known buffer. After a swap the back buffer's contents
+        // are undefined, so anything the game does not repaint this frame -- a region
+        // outside a menu's background blit, or a transparent part of it -- would show
+        // leftovers from an older frame and flicker between two images.
+        if (!clearedThisFrame)
         {
-            g_Supervisor.d3dDevice->BeginScene();
-            g_AnmManager->ResetVertexBuffer();
-            g_Supervisor.fogEnabled = 255;
-            g_Supervisor.DisableFog();
-            g_Chain.RunDrawChain();
-            g_AnmManager->Flush();
-            g_Supervisor.d3dDevice->SetTexture(0, NULL);
-            g_Supervisor.d3dDevice->EndScene();
+            RendererClear(0.0f, 0.0f, 0.0f);
+            TextOverlayBegin();
+            clearedThisFrame = TRUE;
         }
-
-        g_AnmManager->Flush();
-        g_Supervisor.viewport.X = 0;
-        g_Supervisor.viewport.Y = 0;
-        g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
-        g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-        g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
-
-        chainRes = g_Chain.RunCalcChain();
-        g_SoundPlayer.ProcessQueues();
-
-        if (!chainRes)
-        {
-            return RENDER_RESULT_EXIT_SUCCESS;
-        }
-        if (chainRes == -1)
-        {
-            return RENDER_RESULT_EXIT_ERROR;
-        }
-
-        this->curFrame++;
     }
+    if ((i32)g_Supervisor.cfg.frameskipConfig <= (i32)this->curFrame)
+    {
+        RendererBeginFrame();
+        g_AnmManager->ResetVertexBuffer();
+        g_Supervisor.fogEnabled = 255;
+        g_Supervisor.DisableFog();
+        g_Chain.RunDrawChain();
+        g_AnmManager->Flush();
+
+        // The text layer goes on last, over everything the game just drew.
+        TextOverlayFlush();
+    }
+
+    g_AnmManager->Flush();
+    g_Supervisor.viewport.X = 0;
+    g_Supervisor.viewport.Y = 0;
+    g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
+    g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
+    RendererSetViewport((i32)g_Supervisor.viewport.X, (i32)g_Supervisor.viewport.Y,
+                        (i32)g_Supervisor.viewport.Width,
+                        (i32)g_Supervisor.viewport.Height);
+
+    chainRes = g_Chain.RunCalcChain();
+    g_SoundPlayer.ProcessQueues();
+
+    if (!chainRes)
+    {
+        return RENDER_RESULT_EXIT_SUCCESS;
+    }
+    if (chainRes == -1)
+    {
+        return RENDER_RESULT_EXIT_ERROR;
+    }
+
+    this->curFrame++;
 
     if (g_Supervisor.cfg.windowed || g_Supervisor.VsyncDisabled())
     {
@@ -393,6 +450,16 @@ RenderResult GameWindow::Render()
             if (g_GameWindow.lpFrequency.LowPart != 0)
             {
                 QueryPerformanceCounter(reinterpret_cast<LARGE_INTEGER *>(&perfCounter));
+
+                // The reference point starts at zero, so the first frame after a reset
+                // would measure the whole time since boot and spin the catch-up loop for
+                // thousands of iterations. Start from "now" instead.
+                if (g_LastPerfCounter.LowPart == 0 && g_LastPerfCounter.HighPart == 0)
+                {
+                    g_LastPerfCounter.LowPart = perfCounter.LowPart;
+                    g_LastPerfCounter.HighPart = perfCounter.HighPart;
+                }
+
                 perfDiff = (f64)(perfCounter.LowPart - g_LastPerfCounter.LowPart) / (f64)g_GameWindow.lpFrequency.LowPart;
 
                 if (perfDiff < 0.0)
@@ -413,6 +480,15 @@ RenderResult GameWindow::Render()
                         goto LAB_00434a18;
                     }
                     goto begin_loop;
+                }
+
+                // Not enough time has passed for the next frame. The original reached
+                // this point inside Direct3D's present, which blocked until the
+                // vertical blank; with an explicit swap there is nothing to block on,
+                // so sleep the remainder instead of spinning a core flat out.
+                if (perfDiff > 0.0005)
+                {
+                    Sleep((DWORD)((1.0 / 60.0 - perfDiff) * 1000.0));
                 }
             }
             else
@@ -458,6 +534,15 @@ RenderResult GameWindow::Render()
         this->curFrame = 0;
         g_FrameCount++;
     }
+    else
+    {
+        // Windowed and vsync-disabled runs reach this point with a completed frame but
+        // never pass through Present, which is where the buffers are swapped. Showing
+        // it here keeps one swap per frame for those modes too.
+        Present();
+        this->curFrame = 0;
+        g_FrameCount++;
+    }
 
     return RENDER_RESULT_KEEP_RUNNING;
 }
@@ -465,277 +550,136 @@ RenderResult GameWindow::Render()
 // FUNCTION: TH07 0x00434a40
 i32 GameWindow::InitD3dInterface()
 {
-    g_Supervisor.d3dIface = Direct3DCreate8(D3D_SDK_VERSION);
-    if (!g_Supervisor.d3dIface)
+    // SDL replaces the Direct3D interface creation. The window itself is created by
+    // CreateGameWindow, which needs the video subsystem up first.
+    // Video, audio and gamepad are brought up together. Audio used to be initialised
+    // lazily from the sound manager, but SDL tracks each subsystem separately and the
+    // lazily-initialised one did not report as available.
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD |
+                  SDL_INIT_JOYSTICK))
     {
         g_GameErrorContext.Fatal(TH_ERR_D3D_CREATE_FAIL);
         return true;
     }
-
     return false;
 }
 
 // FUNCTION: TH07 0x00434a80
 i32 GameWindow::CreateGameWindow(HINSTANCE hInstance)
 {
-    WNDCLASSA base_class;
-    i32 width;
-    i32 height;
-
-    memset(&base_class, 0, sizeof(WNDCLASSA));
-    base_class.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    base_class.hCursor = LoadCursorA(NULL, IDC_ARROW);
-    base_class.hInstance = hInstance;
-    base_class.lpfnWndProc = WindowProc;
+    Uint32 flags = SDL_WINDOW_OPENGL;
     g_GameWindow.isAppActive = TRUE;
     g_GameWindow.isAppInactive = FALSE;
-    // STRING: TH07 0x00497bd0
-    base_class.lpszClassName = "BASE";
-    RegisterClassA(&base_class);
+
+    (void)hInstance;
+
+    // Match the original's window policy: a fixed-size window unless the config asks
+    // for fullscreen, and a 640x480 back buffer either way.
     if (!g_Supervisor.cfg.windowed)
     {
-        width = GAME_WINDOW_WIDTH;
-        height = GAME_WINDOW_HEIGHT;
-        g_GameWindow.window = CreateWindowExA(
-            0, "BASE", TH_WINDOW_TITLE, WS_OVERLAPPEDWINDOW,
-            0, 0, width, height, NULL, NULL, hInstance, NULL);
+        flags |= SDL_WINDOW_FULLSCREEN;
     }
-    else
-    {
-        width = GetSystemMetrics(SM_CXFIXEDFRAME) * 2 + GAME_WINDOW_WIDTH;
-        height = GAME_WINDOW_HEIGHT + GetSystemMetrics(SM_CYFIXEDFRAME) * 2 + GetSystemMetrics(SM_CYCAPTION);
-        g_GameWindow.window = CreateWindowExA(
-            0, "BASE", TH_WINDOW_TITLE,
-            WS_VISIBLE | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT, CW_USEDEFAULT, width, height, NULL, NULL,
-            hInstance, NULL);
-    }
-    g_Supervisor.hwndGameWindow = g_GameWindow.window;
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+
+    g_GameWindow.window = SDL_CreateWindow(TH_WINDOW_TITLE, GAME_WINDOW_WIDTH,
+                                           GAME_WINDOW_HEIGHT, flags);
     if (!g_GameWindow.window)
     {
+        g_GameErrorContext.Fatal(TH_ERR_D3D_CREATE_FAIL);
         return true;
     }
 
-    SetWindowActive(g_GameWindow.window);
+    g_Renderer.window = g_GameWindow.window;
+    g_Renderer.context = SDL_GL_CreateContext(g_GameWindow.window);
+    if (!g_Renderer.context)
+    {
+        SDL_Log("SDL_GL_CreateContext failed: %s", SDL_GetError());
+        SDL_DestroyWindow(g_GameWindow.window);
+        g_GameWindow.window = NULL;
+        return true;
+    }
+
+    // The swap interval is applied once the context is current. Setting it here, before
+    // the renderer loads its entry points, silently did nothing and left the game
+    // running unthrottled.
+    SDL_GL_MakeCurrent(g_GameWindow.window, g_Renderer.context);
+    SDL_GL_SetSwapInterval(1);
+
+    SDL_SetWindowPosition(g_GameWindow.window, SDL_WINDOWPOS_CENTERED,
+                          SDL_WINDOWPOS_CENTERED);
+    SDL_ShowWindow(g_GameWindow.window);
+
+    // The old HWND is still used as a handle by a couple of call sites; keep it in
+    // sync with the SDL window's native handle so those stay valid.
+    g_Supervisor.hwndGameWindow = (HWND)SDL_GetPointerProperty(
+        SDL_GetWindowProperties(g_GameWindow.window),
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+
     return false;
 }
 
-#pragma var_order(retryWithoutRefreshRate, usingD3dHal, displayMode, presentParams, halfCameraDistance, \
-                  halfHeight, halfWidth, aspectRatio, fov, capsBuffer, pUp,                             \
-                  pAt, pEye)
 // FUNCTION: TH07 0x00434bd0
 i32 GameWindow::InitD3dRendering()
 {
-    D3DXVECTOR3 pEye;
-    D3DXVECTOR3 pAt;
-    D3DXVECTOR3 pUp;
-    char capsBuffer[8192];
     f32 fov;
     f32 aspectRatio;
     f32 halfWidth;
     f32 halfHeight;
     f32 halfCameraDistance;
-    D3DPRESENT_PARAMETERS presentParams;
-    D3DDISPLAYMODE displayMode;
-    bool usingD3dHal;
-    ZunBool retryWithoutRefreshRate;
+    D3DXVECTOR3 pEye;
+    D3DXVECTOR3 pAt;
+    D3DXVECTOR3 pUp;
 
-    usingD3dHal = true;
-    memset(&presentParams, 0, sizeof(D3DPRESENT_PARAMETERS));
-    g_Supervisor.d3dIface->GetAdapterDisplayMode(0, &displayMode);
-    if (!g_Supervisor.cfg.windowed)
+    // SDL and the GL context already exist; this sets up the renderer on top of them.
+    if (!RendererInitialize())
     {
-        if (g_Supervisor.cfg.use16BitTextures == 1)
-        {
-            presentParams.BackBufferFormat = D3DFMT_R5G6B5;
-            g_Supervisor.cfg.colorMode16bit = 1;
-        }
-        else if (g_Supervisor.cfg.colorMode16bit == 255)
-        {
-            presentParams.BackBufferFormat = D3DFMT_X8R8G8B8;
-            g_Supervisor.cfg.colorMode16bit = 0;
-            g_GameErrorContext.Log(TH_LOG_DISPLAY_INIT_32BITS);
-        }
-        else if (!g_Supervisor.cfg.colorMode16bit)
-        {
-            presentParams.BackBufferFormat = D3DFMT_X8R8G8B8;
-        }
-        else
-        {
-            presentParams.BackBufferFormat = D3DFMT_R5G6B5;
-        }
-        if (g_GameWindow.usesRelativePath != false)
-        {
-            g_Supervisor.vsyncDisabled = TRUE;
-        }
-        if (!g_Supervisor.vsyncDisabled)
-        {
-            presentParams.FullScreen_RefreshRateInHz = 60;
-            presentParams.FullScreen_PresentationInterval = 1;
-            g_GameErrorContext.Log(TH_LOG_DISPLAY_CHANGE_60_HZ);
-            if (!g_Supervisor.cfg.frameskipConfig)
-            {
-                presentParams.SwapEffect = D3DSWAPEFFECT_FLIP;
-            }
-            else
-            {
-                presentParams.SwapEffect = D3DSWAPEFFECT_COPY_VSYNC;
-            }
-        }
-        else
-        {
-            presentParams.FullScreen_RefreshRateInHz = 0;
-            presentParams.SwapEffect = D3DSWAPEFFECT_COPY;
-            presentParams.FullScreen_PresentationInterval =
-                D3DPRESENT_INTERVAL_IMMEDIATE;
-            g_GameErrorContext.Log(TH_LOG_TRY_ASYNC_VSYNC);
-        }
+        g_GameErrorContext.Fatal(TH_ERR_D3D_INIT_FAIL);
+        return 1;
     }
-    else
-    {
-        presentParams.BackBufferFormat = displayMode.Format;
-        presentParams.SwapEffect = D3DSWAPEFFECT_COPY;
-        presentParams.Windowed = 1;
-    }
-    presentParams.BackBufferWidth = GAME_WINDOW_WIDTH;
-    presentParams.BackBufferHeight = GAME_WINDOW_HEIGHT;
-    presentParams.EnableAutoDepthStencil = 1;
-    presentParams.AutoDepthStencilFormat = D3DFMT_D16;
-    presentParams.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
+
+    // The original queried capabilities and downgraded settings when the hardware could
+    // not cope. GL 3.3 has all of these unconditionally, so the checks are recorded as
+    // satisfied rather than probed.
+    g_Supervisor.usingTnLHal = 1;
+    g_Supervisor.supports32BitTex = 1;
     g_Supervisor.hasLockableBackbuffer = 1;
     g_Supervisor.lockableBackBuffer = TRUE;
-    retryWithoutRefreshRate = FALSE;
-    for (;;)
-    {
-        if (g_Supervisor.cfg.forceReferenceRender)
-        {
-            goto fallback_to_software;
-        }
-        if (FAILED(g_Supervisor.d3dIface->CreateDevice(
-                0, D3DDEVTYPE_HAL, g_GameWindow.window,
-                D3DCREATE_HARDWARE_VERTEXPROCESSING, &presentParams,
-                &g_Supervisor.d3dDevice)))
-        {
-            if (retryWithoutRefreshRate)
-            {
-                g_GameErrorContext.Log(TH_LOG_TL_HAL_UNUSABLE);
-            }
-            if (FAILED(g_Supervisor.d3dIface->CreateDevice(
-                    0, D3DDEVTYPE_HAL, g_GameWindow.window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &presentParams,
-                    &g_Supervisor.d3dDevice)))
-            {
-                if (retryWithoutRefreshRate)
-                {
-                    g_GameErrorContext.Log(TH_LOG_HAL_UNUSABLE);
-                }
-            fallback_to_software:
-                if (FAILED(g_Supervisor.d3dIface->CreateDevice(
-                        0, D3DDEVTYPE_REF, g_GameWindow.window,
-                        D3DCREATE_SOFTWARE_VERTEXPROCESSING, &presentParams,
-                        &g_Supervisor.d3dDevice)))
-                {
-                    if (!g_Supervisor.vsyncDisabled)
-                    {
-                        g_GameErrorContext.Log(TH_LOG_REFRESH_RATE_UNCHANGED);
-                        presentParams.FullScreen_RefreshRateInHz = 0;
-                        g_Supervisor.lockableBackBuffer = FALSE;
-                        retryWithoutRefreshRate = TRUE;
-                        continue;
-                    }
+    g_Supervisor.cfg.colorAddEmulation = 0;
+    g_Supervisor.cfg.noVertexBuffers = 0;
+    g_Supervisor.cfg.use16BitTextures = 0;
+    g_Supervisor.cfg.disableTextureBlend = 0;
+    g_Supervisor.cfg.disableGouraud = 0;
+    g_Supervisor.cfg.disableZBuffer = 0;
+    g_Supervisor.cfg.disableFog = 0;
 
-                    if (presentParams.FullScreen_PresentationInterval == D3DPRESENT_INTERVAL_IMMEDIATE)
-                    {
-                        g_GameErrorContext.Log(TH_LOG_ASYNC_VSYNC_UNAVAILABLE);
-                        g_GameErrorContext.Fatal(TH_ERR_CHANGE_YO_REFRESH_RATE);
-                        presentParams.FullScreen_PresentationInterval = 1;
-                        presentParams.SwapEffect = D3DSWAPEFFECT_COPY;
-                        continue;
-                    }
-                    else
-                    {
-                        g_GameErrorContext.Fatal(TH_ERR_D3D_INIT_FAIL);
-                        SAFE_RELEASE(g_Supervisor.d3dIface);
-                        return 1;
-                    }
-                }
-                else
-                {
-                    // STRING: TH07 0x004979c8
-                    g_GameErrorContext.Log(TH_LOG_USING_REF_RENDER);
-                    g_Supervisor.usingTnLHal = 0;
-                    usingD3dHal = false;
-                }
-            }
-            else
-            {
-                g_GameErrorContext.Log(TH_LOG_USING_HAL);
-                g_Supervisor.usingTnLHal = 0;
-            }
-        }
-        else
-        {
-            g_GameErrorContext.Log(TH_LOG_USING_TL_HAL);
-            g_Supervisor.usingTnLHal = 1;
-        }
-        break;
-    }
-
-    g_Supervisor.presentParameters = presentParams;
+    // Same camera the original built: a 30 degree vertical field of view, looking at the
+    // centre of the 640x480 playfield from far enough back to contain it.
     halfWidth = 320.0f;
     halfHeight = 240.0f;
     aspectRatio = 4.0f / 3.0f;
     fov = ZUN_PI / 6.0f;
     halfCameraDistance = halfHeight / tanf(fov / 2.0f);
-    pUp.x = 0.0f;
-    pUp.y = 1.0f;
-    pUp.z = 0.0f;
-    pAt.x = halfWidth;
-    pAt.y = -halfHeight;
-    pAt.z = 0.0f;
-    pEye.x = halfWidth;
-    pEye.y = -halfHeight;
-    pEye.z = -halfCameraDistance;
+    pUp = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+    pAt = D3DXVECTOR3(halfWidth, -halfHeight, 0.0f);
+    pEye = D3DXVECTOR3(halfWidth, -halfHeight, -halfCameraDistance);
     D3DXMatrixLookAtLH(&g_Supervisor.viewMatrix, &pEye, &pAt, &pUp);
-    D3DXMatrixPerspectiveFovLH(&g_Supervisor.projectionMatrix, fov,
-                               aspectRatio, 100.0f, 10000.0f);
+    D3DXMatrixPerspectiveFovLH(&g_Supervisor.projectionMatrix, fov, aspectRatio, 100.0f,
+                               10000.0f);
 
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_VIEW,
-                                         &g_Supervisor.viewMatrix);
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_PROJECTION,
-                                         &g_Supervisor.projectionMatrix);
-    g_Supervisor.d3dDevice->GetViewport(&g_Supervisor.viewport);
-    g_Supervisor.d3dDevice->GetDeviceCaps(&g_Supervisor.d3dCaps);
-    if (!g_Supervisor.cfg.colorAddEmulation &&
-        (g_Supervisor.d3dCaps.TextureOpCaps & 0x40) == 0)
-    {
-        g_GameErrorContext.Log(TH_LOG_USING_COLOR_ADD_EMU);
-        g_Supervisor.cfg.colorAddEmulation = 1;
-    }
-    if (g_Supervisor.d3dCaps.MaxTextureWidth <= 256)
-    {
-        g_GameErrorContext.Log(TH_LOG_LARGE_TEX_UNSUPPORTED);
-    }
-    FormatD3DCapabilities(&g_Supervisor.d3dCaps, capsBuffer);
-    g_GameErrorContext.Log(capsBuffer);
-    if (!g_Supervisor.cfg.use16BitTextures && usingD3dHal)
-    {
-        if (g_Supervisor.d3dIface->CheckDeviceFormat(
-                0, D3DDEVTYPE_HAL, presentParams.BackBufferFormat, 0,
-                D3DRTYPE_TEXTURE, D3DFMT_A8R8G8B8) == 0)
-        {
-            g_Supervisor.supports32BitTex = 1;
-        }
-        else
-        {
-            g_Supervisor.supports32BitTex = 0;
-            g_Supervisor.cfg.use16BitTextures = 1;
-            g_GameErrorContext.Log(TH_LOG_USING_REDUCED_COLOR);
-        }
-    }
-    ResetRenderState();
-    ScreenEffect::SetViewport(0xff000000);
-    g_GameWindow.isAppClosing = FALSE;
-    g_Supervisor.lastFrameTime = 0;
+    g_Supervisor.viewport.X = 0;
+    g_Supervisor.viewport.Y = 0;
+    g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
+    g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
+    g_Supervisor.viewport.MinZ = 0.0f;
+    g_Supervisor.viewport.MaxZ = 1.0f;
+
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
+    RendererSetMatrices(&g_Supervisor.viewMatrix, &g_Supervisor.projectionMatrix);
     return 0;
 }
 
@@ -755,205 +699,27 @@ char *GameWindow::FormatCapability(const char *capabilityName,
     return buf;
 }
 
-// FUNCTION: TH07 0x00435230
-void GameWindow::FormatD3DCapabilities(D3DCAPS8 *caps, char *buf)
-{
-    char *strPos;
-
-    strPos = buf;
-    strPos += sprintf(strPos, TH_CAP_VIDEO_SUMMARY);
-    strPos = FormatCapability(TH_CAP_VIDEO_SCANLINE, caps->Caps,
-                              D3DCAPS_READ_SCANLINE, strPos);
-    strPos = FormatCapability(TH_CAP_VIDEO_WINDOWED, caps->Caps2,
-                              D3DCAPS2_CANRENDERWINDOWED, strPos);
-    strPos = FormatCapability(
-        TH_CAP_VIDEO_PRESENT_INTERVAL_IMMEDIATE, caps->PresentationIntervals,
-        D3DPRESENT_INTERVAL_IMMEDIATE, strPos);
-    strPos = FormatCapability(
-        TH_CAP_VIDEO_PRESENT_INTERVAL_VSYNC, caps->PresentationIntervals,
-        D3DPRESENT_INTERVAL_ONE, strPos);
-    strPos += sprintf(strPos, TH_CAP_DEV_SUMMARY);
-    strPos =
-        FormatCapability(TH_CAP_DEV_NON_LOCAL_VRAM_BLIT, caps->DevCaps,
-                         D3DDEVCAPS_CANBLTSYSTONONLOCAL, strPos);
-    strPos = FormatCapability(TH_CAP_DEV_HARDWARE_TL, caps->DevCaps,
-                              D3DDEVCAPS_HWTRANSFORMANDLIGHT, strPos);
-    strPos =
-        FormatCapability(TH_CAP_DEV_NON_LOCAL_VRAM_TEX, caps->DevCaps,
-                         D3DDEVCAPS_TEXTURENONLOCALVIDMEM, strPos);
-    strPos =
-        FormatCapability(TH_CAP_DEV_SYS_MEM_TEX, caps->DevCaps,
-                         D3DDEVCAPS_TEXTURESYSTEMMEMORY, strPos);
-    strPos = FormatCapability(TH_CAP_DEV_VRAM_TEX, caps->DevCaps,
-                              D3DDEVCAPS_TEXTUREVIDEOMEMORY, strPos);
-    strPos =
-        FormatCapability(TH_CAP_DEV_SYS_MEM_VERTEX_BUF, caps->DevCaps,
-                         D3DDEVCAPS_TLVERTEXSYSTEMMEMORY, strPos);
-    strPos =
-        FormatCapability(TH_CAP_DEV_VMEM_VERTEX_BUF, caps->DevCaps,
-                         D3DDEVCAPS_TLVERTEXVIDEOMEMORY, strPos);
-    strPos += sprintf(strPos, TH_CAP_PRIMITIVE_SUMMARY);
-    strPos = FormatCapability(TH_CAP_PRIMITIVE_TRANSPARENCY,
-                              caps->PrimitiveMiscCaps,
-                              D3DPMISCCAPS_BLENDOP, strPos);
-    strPos = FormatCapability(
-        TH_CAP_PRIMITIVE_POINT_CLIPPING, caps->PrimitiveMiscCaps,
-        D3DPMISCCAPS_CLIPPLANESCALEDPOINTS, strPos);
-    strPos = FormatCapability(
-        TH_CAP_PRIMITIVE_TL_CLIPPING, caps->PrimitiveMiscCaps,
-        D3DPMISCCAPS_CLIPTLVERTS, strPos);
-    strPos = FormatCapability(
-        TH_CAP_PRIMITIVE_CLIP_CCW, caps->PrimitiveMiscCaps,
-        D3DPMISCCAPS_CULLCCW, strPos);
-    strPos =
-        FormatCapability(TH_CAP_PRIMITIVE_CLIP_CW, caps->PrimitiveMiscCaps,
-                         D3DPMISCCAPS_CULLCW, strPos);
-    strPos = FormatCapability(TH_CAP_PRIMITIVE_CLIP_NONE, caps->PrimitiveMiscCaps,
-                              D3DPMISCCAPS_CULLNONE, strPos);
-    strPos = FormatCapability(
-        TH_CAP_PRIMITIVE_DEPTH_TEST, caps->PrimitiveMiscCaps,
-        D3DPMISCCAPS_MASKZ, strPos);
-    strPos += sprintf(strPos, TH_CAP_RASTER_SUMMARY);
-    strPos = FormatCapability(TH_CAP_RASTER_ANISOTROPIC_FILTER, caps->RasterCaps,
-                              D3DPRASTERCAPS_ANISOTROPY, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_ANTIALIASING, caps->RasterCaps,
-                              D3DPRASTERCAPS_ANTIALIASEDGES, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_DITHER, caps->RasterCaps,
-                              D3DPRASTERCAPS_DITHER, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_RANGE_FOG, caps->RasterCaps,
-                              D3DPRASTERCAPS_FOGRANGE, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_Z_FOG, caps->RasterCaps,
-                              D3DPRASTERCAPS_ZFOG, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_TABLE_FOG, caps->RasterCaps,
-                              D3DPRASTERCAPS_FOGTABLE, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_VERTEX_FOG, caps->RasterCaps,
-                              D3DPRASTERCAPS_FOGVERTEX, strPos);
-    strPos = FormatCapability(TH_CAP_RASTER_DEPTH_TEST, caps->RasterCaps,
-                              D3DPRASTERCAPS_ZTEST, strPos);
-    strPos += sprintf(strPos, TH_CAP_SHADE_SUMMARY);
-    strPos = FormatCapability(TH_CAP_SHADE_GOURAUD, caps->ShadeCaps,
-                              D3DPSHADECAPS_COLORGOURAUDRGB, strPos);
-    strPos = FormatCapability(TH_CAP_SHADE_ALPHA_GOURAUD, caps->ShadeCaps,
-                              D3DPSHADECAPS_ALPHAGOURAUDBLEND, strPos);
-    strPos = FormatCapability(TH_CAP_SHADE_FOG_GOURAUD, caps->ShadeCaps,
-                              D3DPSHADECAPS_FOGGOURAUD, strPos);
-    strPos += sprintf(strPos, TH_CAP_TEX_SUMMARY);
-    strPos += sprintf(strPos, TH_CAP_TEX_MAX_SIZE,
-                      caps->MaxTextureWidth, caps->MaxTextureHeight);
-    strPos = FormatCapability(TH_CAP_TEX_ALPHA, caps->TextureCaps,
-                              D3DPTEXTURECAPS_ALPHA, strPos);
-    strPos = FormatCapability(TH_CAP_TEX_TRANSFORM, caps->TextureCaps,
-                              D3DPTEXTURECAPS_PROJECTED, strPos);
-    strPos = FormatCapability(TH_CAP_BILINEAR_UPSCALE, caps->TextureFilterCaps,
-                              D3DPTFILTERCAPS_MAGFLINEAR, strPos);
-    strPos = FormatCapability(TH_CAP_BILINEAR_DOWNSCALE, caps->TextureFilterCaps,
-                              D3DPTFILTERCAPS_MINFLINEAR, strPos);
-    // STRING: TH07 0x00497340
-    strPos += sprintf(strPos, "--------------------------------------------\r\n");
-}
 
 // FUNCTION: TH07 0x004356a0
 void GameWindow::ResetRenderState()
 {
-    if (!g_Supervisor.cfg.disableZBuffer)
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZENABLE, TRUE);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
-    }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    if (!g_Supervisor.cfg.disableGouraud)
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT);
-    }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHAREF, 4);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
-    if (!g_Supervisor.cfg.disableFog)
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGENABLE, TRUE);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGENABLE, FALSE);
-    }
-    f32 fogDensity = 1.0f;
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGDENSITY, *(DWORD *)&fogDensity);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGCOLOR, 0xffa0a0a0);
+    // Most of what this did was fixed-function pipeline setup: lighting, culling,
+    // shading mode, fog, alpha test, texture stages. The renderer has none of that --
+    // it has one shader, alpha blending and optional depth writes -- so what remains is
+    // the handful of choices that still mean something.
+    RendererSetBlend(RENDER_BLEND_ALPHA);
+    RendererSetZWrite(g_Supervisor.cfg.disableZBuffer ? false : true);
 
-    f32 fog = 1000.0f;
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGSTART, *(DWORD *)&fog);
-    fog = 5000.0f;
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_FOGEND, *(DWORD *)&fog);
-    if ((g_Supervisor.d3dCaps.RasterCaps | 0x1000) != 0)
-    {
-        g_Supervisor.d3dDevice->SetRenderState(D3DRS_EDGEANTIALIAS, 0);
-    }
-    g_Supervisor.d3dDevice->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, 0);
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    if (!g_Supervisor.cfg.noVertexBuffers)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    }
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    if (!g_Supervisor.cfg.noVertexBuffers)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-    }
-    else
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS,
-                                                 D3DTTFF_COUNT2);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ADDRESSW, D3DTADDRESS_CLAMP);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+    // The game's caches are stale after a reset; make the next draw reconfigure.
     if (g_AnmManager)
     {
-        g_AnmManager->SetBlendMode(255);
-        g_AnmManager->SetColorOp(255);
         g_AnmManager->SetVertexShader(255);
+        g_AnmManager->SetSprite(NULL);
         g_AnmManager->SetTexture(NULL);
-        g_AnmManager->SetCameraMode(255);
+        g_AnmManager->SetColorOp(255);
+        g_AnmManager->SetBlendMode(255);
+        g_AnmManager->SetZWriteDisable(255);
     }
-    g_Stage.renderStateWasReset = 1;
 }
 
 #pragma var_order(exePath, startupInfo, resolvedPath, ext)

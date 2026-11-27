@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include "AnmIdx.hpp"
+#include "RenderCompat.hpp"
+#include "RenderTexture.hpp"
 #include "Supervisor.hpp"
 #include "ZunColor.hpp"
 #include "ZunMath.hpp"
@@ -172,7 +174,7 @@ struct ZunImageInfo
     u32 height;
     u32 depth;
     u32 mipLevels;
-    D3DFORMAT format;
+    u32 format;
 };
 
 #pragma warning(disable : 4200)
@@ -550,7 +552,7 @@ struct AnmManager
         this->currentSprite = value;
     }
 
-    void SetTexture(IDirect3DTexture8 *value)
+    void SetTexture(TextureHandle *value)
     {
         this->currentTexture = value;
     }
@@ -629,18 +631,18 @@ struct AnmManager
     D3DXMATRIX matrix;
     AnmLoadedSprite sprites[MAX_SCRIPTS_SPRITES];
     AnmVm vm;
-    IDirect3DTexture8 *textures[MAX_TEXTURES];
+    TextureHandle *textures[MAX_TEXTURES];
     void *imageDataArray[256];
     char *textureNames[MAX_TEXTURES];
     i32 loadedSpriteCount;
     AnmRawInstr *scripts[MAX_SCRIPTS_SPRITES];
     i32 spriteIndices[MAX_SCRIPTS_SPRITES];
     AnmEntry anmFiles[MAX_ANM_FILES];
-    IDirect3DSurface8 *surfaces[MAX_SURFACES];
-    IDirect3DSurface8 *surfacesBis[MAX_SURFACES];
+    SurfaceHandle *surfaces[MAX_SURFACES];
+    SurfaceHandle *surfacesBis[MAX_SURFACES];
     ZunImageInfo surfaceSourceInfo[MAX_SURFACES];
     ZunColor currentTextureFactor;
-    IDirect3DTexture8 *currentTexture;
+    TextureHandle *currentTexture;
     u8 currentBlendMode;
     u8 currentColorOp;
     u8 currentVertexShader;
@@ -648,7 +650,7 @@ struct AnmManager
     u8 currentCameraMode;
     // pad 3
     AnmLoadedSprite *currentSprite;
-    IDirect3DVertexBuffer8 *vertexBuffer;
+    void *vertexBuffer;
     RenderVertexInfo vertexBufferContents[4];
     u32 spritesToDraw;
     VertexTex1DiffuseXyzrhw spriteVertexBuffer[49152];
@@ -664,5 +666,7 @@ struct AnmManager
     i32 screenshotDstWidth;
     i32 screenshotDstHeight;
 };
-C_ASSERT(sizeof(AnmManager) == 0x17e560);
+// The layout no longer matches the retail binary: textures and surfaces are handles
+// now rather than COM interfaces. Nothing reads this struct from a file, so the exact
+// size is not load-bearing the way GameConfiguration's is.
 extern AnmManager *g_AnmManager;

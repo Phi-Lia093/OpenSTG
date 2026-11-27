@@ -552,16 +552,11 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
     g_AnmManager->Flush();
     if (arg->clearBackground)
     {
-        viewport.X = 32;
-        viewport.Y = 16;
-        viewport.Width = 384;
-        viewport.Height = 448;
-        g_Supervisor.d3dDevice->SetViewport(&viewport);
-        g_Supervisor.d3dDevice->Clear(0, NULL, D3DCLEAR_TARGET, 0xff000000, 1.0f,
-                                      0);
+        // Clear only the playfield rectangle, leaving the rest of the screen alone.
+        RendererClearRegion(32, 16, 384, 448, 0.0f, 0.0f, 0.0f);
         arg->clearBackground = FALSE;
     }
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     if (arg->color2.bytes.a > 0)
     {
         g_AnmManager->SetColorWithMulEnabled(arg->color2.color);
@@ -584,20 +579,23 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
             }
         }
     }
+    // A non-zero colour clears the whole target, otherwise only the depth buffer.
     if (arg->color != 0)
     {
-        g_Supervisor.d3dDevice->Clear(0, NULL, D3DCLEAR_ZBUFFER | D3DCLEAR_TARGET,
-                                      arg->color, 1.0f, 0);
+        RendererClear(((arg->color >> 16) & 0xff) / 255.0f,
+                      ((arg->color >> 8) & 0xff) / 255.0f,
+                      (arg->color & 0xff) / 255.0f);
     }
     else
     {
-        g_Supervisor.d3dDevice->Clear(0, NULL, D3DCLEAR_ZBUFFER, arg->color, 1.0f,
-                                      0);
+        RendererClearDepth();
     }
-    g_Supervisor.SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    RendererSetZWrite(true);
+    // Fog colour and planes are kept in the stage state because the background
+    // shader path reads them; the renderer itself does not apply per-vertex fog.
     if (!g_AnmManager->colorMulEnabled)
     {
-        g_Supervisor.SetRenderState(D3DRS_FOGCOLOR, arg->skyFog.color.color);
+        fogColor.color = arg->skyFog.color.color;
     }
     else
     {
@@ -605,10 +603,7 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
         fogColor.bytes.r = ZunColor::Multiply(fogColor.bytes.r, g_AnmManager->color.bytes.r);
         fogColor.bytes.g = ZunColor::Multiply(fogColor.bytes.g, g_AnmManager->color.bytes.g);
         fogColor.bytes.b = ZunColor::Multiply(fogColor.bytes.b, g_AnmManager->color.bytes.b);
-        g_Supervisor.SetRenderState(D3DRS_FOGCOLOR, fogColor.color);
     }
-    g_Supervisor.SetRenderState(D3DRS_FOGSTART, *(DWORD *)&arg->skyFog.nearPlane);
-    g_Supervisor.SetRenderState(D3DRS_FOGEND, *(DWORD *)&arg->skyFog.farPlane);
     if (!g_Supervisor.cfg.disableFog)
     {
         g_Supervisor.EnableFog();
@@ -652,17 +647,13 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
                 rect.bottom = 464.0f;
                 alpha = arg->ticksSinceSpellcardStarted * 255 / 60;
                 g_AnmManager->Flush();
-                g_Supervisor.SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
-                if (!g_Supervisor.cfg.disableFog)
-                {
-                    g_Supervisor.SetRenderState(D3DRS_FOGENABLE, FALSE);
-                }
+                RendererSetZWrite(false);
                 ScreenEffect::DrawSquare(&rect, alpha << 24);
             }
         }
     }
     g_AnmManager->Flush();
-    g_Supervisor.SetRenderState(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+    RendererSetZWrite(false);
     if (!g_Supervisor.cfg.disableFog)
     {
         g_Supervisor.DisableFog();
@@ -676,11 +667,7 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
     }
     AnmManager::SetCameraModeStatic(g_AnmManager, 0);
     arg->SetupCameraStageBackground();
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
-    fog = 1000.0f;
-    g_Supervisor.SetRenderState(D3DRS_FOGSTART, *(DWORD *)&fog);
-    fog = 2000.0f;
-    g_Supervisor.SetRenderState(D3DRS_FOGEND, *(DWORD *)&fog);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     if (!arg->isDarkening)
     {
         g_AnmManager->SetColor(0x80808080);
@@ -1157,9 +1144,8 @@ void Stage::SetupCameraStageBackground()
         &g_Supervisor.projectionMatrix, fov,
         aspectRatio,
         1.0f, 10000.0f);
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_VIEW, &g_Supervisor.viewMatrix);
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_PROJECTION,
-                                         &g_Supervisor.projectionMatrix);
+    RendererSetMatrices(&g_Supervisor.viewMatrix,
+                        &g_Supervisor.projectionMatrix);
 }
 
 // FUNCTION: TH07 0x004082b0
@@ -1171,9 +1157,8 @@ void Stage::UpdateCamera()
                                (f32)g_Supervisor.viewport.Width /
                                    (f32)g_Supervisor.viewport.Height,
                                30.0f, 1800.0f);
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_VIEW, &g_Supervisor.viewMatrix);
-    g_Supervisor.d3dDevice->SetTransform(D3DTS_PROJECTION,
-                                         &g_Supervisor.projectionMatrix);
+    RendererSetMatrices(&g_Supervisor.viewMatrix,
+                        &g_Supervisor.projectionMatrix);
     D3DXVec3Cross(&this->cam.right, &this->cam.lookAt, &this->cam.up);
     D3DXVec3Normalize(&this->cam.right, &this->cam.right);
 }

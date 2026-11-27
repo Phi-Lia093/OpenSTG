@@ -36,6 +36,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 DX8 = ROOT / ".tools/dx8sdk"
+SDL3 = ROOT / ".tools/sdl3/SDL3-3.4.20"
+SDLIMAGE = ROOT / ".tools/sdlimage/SDL3_image-3.4.8"
 TOOLS = ROOT / ".tools"
 OUT = ROOT / "build"
 TMP = OUT / "tmp"
@@ -48,6 +50,10 @@ LIB = TMP / "lib"
 # Files copied next to the executable. The game opens both by relative name.
 DATA_FILES = ["th07.dat", "thbgm.dat"]
 
+# SDL3 ships as a DLL; the copies in build/ are what the executable loads at runtime.
+# SDL_image decodes the PNG and JPG artwork that the original loaded through D3DX.
+DLL_FILES = [SDL3 / "lib/x86/SDL3.dll", SDLIMAGE / "lib/x86/SDL3_image.dll"]
+
 # The MSVC that is installed here. The 32-bit compiler is what matters: the target is
 # a Win32 executable and the sources assume the VC7-era 32-bit ABI.
 MSVC_BIN = Path(r"D:\toolchain\VS\VC\Tools\MSVC\14.44.35207\bin\Hostx86\x86")
@@ -57,6 +63,7 @@ WINSDK_ROOT = Path(r"C:\Program Files (x86)\Windows Kits\10")
 # The game's own sources. `legacy/` headers are internal split-outs of the same
 # translation units and are included by the files below, not compiled separately.
 SOURCES = [
+    "Renderer.cpp", "RenderCompat.cpp", "RenderTexture.cpp", "FontRenderer.cpp",
     "AnmManager.cpp", "AsciiManager.cpp", "BombData.cpp", "BulletManager.cpp",
     "dsutil.cpp", "EclManager.cpp", "EffectManager.cpp", "Ending.cpp",
     "EnemyEclInstr.cpp", "EnemyManager.cpp", "GameManager.cpp", "Global.cpp",
@@ -68,11 +75,12 @@ SOURCES = [
     "pbg4/Lzss.cpp", "pbg4/Pbg4Archive.cpp", "pbg4/Pbg4File.cpp",
 ]
 
-# From the original link line. d3d8, d3dx8 and dxguid come from the SDK; the rest are
-# Windows libraries.
+# SDL3 replaces d3d8, d3dx8, dinput8 and dsound. winmm stays because MIDI output still
+# goes through it. The remaining entry points (user32, gdi32, ole32) are Win32 proper,
+# used for the window, GDI-drawn text and file dialogs.
 LIBS = [
-    "dinput8.lib", "user32.lib", "dsound.lib", "d3d8.lib", "d3dx8.lib",
-    "dxguid.lib", "gdi32.lib", "winmm.lib", "ole32.lib",
+    "SDL3.lib", "SDL3_image.lib", "user32.lib", "gdi32.lib", "winmm.lib", "ole32.lib",
+    "shell32.lib", "advapi32.lib", "setupapi.lib", "oleaut32.lib", "uuid.lib",
 ]
 
 # No optimisation flags beyond what the code needs: this is a build, not a match.
@@ -258,8 +266,18 @@ def environment(includes: list[Path], libs: list[Path]) -> dict[str, str]:
     env = os.environ.copy()
     msvc_include = MSVC_ROOT / "include"
     msvc_lib = MSVC_ROOT / "lib" / "x86"
-    all_includes = [str(msvc_include), str(DX8 / "include"), *map(str, includes)]
-    all_libs = [str(msvc_lib), str(DX8 / "lib"), *map(str, libs)]
+    # SDL3 comes first so its headers win over anything else on INCLUDE. The DirectX 8
+    # SDK keeps its place on the path only for d3dx8math.h, which supplies D3DXMATRIX
+    # and the matrix helpers the transform code still uses; no D3D8 device, input or
+    # sound entry point is reachable any more.
+    all_includes = [
+        str(msvc_include), str(SDL3 / "include"), str(SDLIMAGE / "include"),
+        str(DX8 / "include"), *map(str, includes),
+    ]
+    all_libs = [
+        str(msvc_lib), str(SDL3 / "lib/x86"), str(SDLIMAGE / "lib/x86"),
+        str(DX8 / "lib"), *map(str, libs),
+    ]
     # PATH needs the compiler's own directory for c1.dll/c2.dll/link.exe to load.
     env["PATH"] = f"{MSVC_BIN};{env.get('PATH', '')}"
     env["INCLUDE"] = ";".join(all_includes)
@@ -318,6 +336,8 @@ def main() -> int:
         raise SystemExit(f"cl.exe not found at {MSVC_BIN}")
     if not (DX8 / "include/d3d8.h").is_file():
         raise SystemExit(f"DirectX 8 SDK not found at {DX8}")
+    if not (SDL3 / "include/SDL3/SDL.h").is_file():
+        raise SystemExit(f"SDL3 not found at {SDL3}")
 
     # The generated message table the sources include.
     subprocess.run([sys.executable, str(ROOT / "tools/generate_i18n.py"),
@@ -339,6 +359,8 @@ def main() -> int:
             str(MSVC_BIN / "cl.exe"), *FLAGS,
             f"/I{GENERATED}", f"/I{SRC}",
             *[f"/I{p}" for p in includes],
+            f"/I{SDL3 / 'include'}",
+            f"/I{SDLIMAGE / 'include'}",
             f"/I{DX8 / 'include'}",
             f"/I{MSVC_ROOT / 'include'}",
             "/c", str(source), f"/Fo{obj}",
@@ -386,6 +408,10 @@ def main() -> int:
     for name in DATA_FILES:
         if stage_data(OUT / name) is None:
             missing.append(name)
+    for dll in DLL_FILES:
+        if not dll.is_file():
+            raise SystemExit(f"SDL3 runtime not found: {dll}")
+        shutil.copyfile(dll, OUT / dll.name)
     write_config(OUT / "th07.cfg")
 
     if not args.keep_tmp:
@@ -395,6 +421,8 @@ def main() -> int:
     for name in DATA_FILES:
         if name not in missing:
             print(f"{OUT / name}  ({OUT.joinpath(name).stat().st_size} bytes)")
+    for dll in DLL_FILES:
+        print(f"{OUT / dll.name}  ({OUT.joinpath(dll.name).stat().st_size} bytes)")
     if missing:
         print(f"\nwarning: missing from .tools: {', '.join(missing)}", file=sys.stderr)
         print("the game will not start without them", file=sys.stderr)

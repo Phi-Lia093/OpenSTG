@@ -11,6 +11,7 @@
 
 #include <direct.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
@@ -127,7 +128,11 @@ u32 MainMenu::OnUpdatePreInput()
         {
             this->demoFramesCount = 0;
         }
-        if (this->demoFramesCount > 900)
+        // Demo playback is disabled while the renderer is being verified: the title
+        // screen would otherwise disappear into a demo after 900 idle frames, which
+        // makes it impossible to take a screenshot of the menu. Restore this to
+        // `demoFramesCount > 900` once the port is finished.
+        if (this->demoFramesCount > 900 && getenv("TH07_ALLOW_DEMO") != NULL)
         {
             g_GameManager.demoIdx++;
             g_GameManager.demoIdx %= 3;

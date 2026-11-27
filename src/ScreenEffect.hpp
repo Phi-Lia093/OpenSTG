@@ -1,6 +1,6 @@
 #pragma once
 
-#include <d3d8.h>
+#include "RenderCompat.hpp"
 
 #include "Global.hpp"
 #include "Supervisor.hpp"

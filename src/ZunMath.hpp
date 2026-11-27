@@ -1,8 +1,6 @@
 #pragma once
 
-#include <d3d8.h>
-#include <d3dx8math.h>
-
+#include "RenderCompat.hpp"
 #include "inttypes.hpp"
 
 #define ZUN_PI ((f32)(3.14159265358979323846))

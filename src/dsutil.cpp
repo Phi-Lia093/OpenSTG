@@ -1,19 +1,100 @@
 //-----------------------------------------------------------------------------
-// File: DSUtil.cpp
+// File: dsutil.cpp
 //
-// Desc: DirectSound framework classes for reading and writing wav files and
-//       playing them in DirectSound buffers. Feel free to use this class
-//       as a starting point for adding extra functionality.
+// Desc: Wave reading (CWaveFile) and SDL3 playback (CSoundManager, CSound,
+//       CStreamingSound) for the game's sound effects and BGM.
 //
-// Copyright (c) 1999-2000 Microsoft Corp. All rights reserved.
+//       This file used to be Microsoft's DirectSound DSUtil framework. The
+//       playback layer is now SDL3:
+//
+//         - every CSound keeps its PCM in memory and owns one audio stream,
+//           opened with SDL_OpenAudioDeviceStream on the default playback
+//           device. A get-callback pulls samples out of the sound whenever the
+//           device needs them, which is what makes several effects play at
+//           once without any explicit mixing code.
+//         - CStreamingSound does the same for BGM, except that its samples are
+//           not in memory; the callback reads the next chunk out of the
+//           CWaveFile (thbgm.dat / th07.dat) instead.
+//
+//       The archive reading is unchanged: CWaveFile::ResetFile still computes
+//       file positions from the ThBgmFormat fields, so the on-disk ZWAV layout
+//       is treated exactly as before.
 //-----------------------------------------------------------------------------
 #define STRICT
 #include "dsutil.hpp"
 #include "SoundPlayer.hpp"
 #include "dxutil.hpp"
-#include <dsound.h>
+#include <math.h>
 #include <mmsystem.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <windows.h>
+
+//-----------------------------------------------------------------------------
+// Helpers
+//-----------------------------------------------------------------------------
+
+// 16-bit PCM frames -> a multiplier. The game speaks in hundredths of a
+// decibel, the scale the old DirectSound buffer volume used, so convert:
+// -100 dBFS is "silent" here (volume -5000 and below).
+static f32 DsVolumeToLinear(i32 volume)
+{
+    if (volume <= -5000)
+    {
+        return 0.0f;
+    }
+    if (volume >= 0)
+    {
+        return 1.0f;
+    }
+    return (f32)pow(10.0, (f64)volume / 2000.0);
+}
+
+// Compile-time check that the callback mixers only ever see the formats
+// DsWaveFormatToSdl() can produce.
+#define SDLSND_ASSERT_PCM_FORMAT(f) \
+    ((f) == SDL_AUDIO_S16LE || (f) == SDL_AUDIO_U8)
+// The SDL format that matches a WAVE header without any conversion. Returns
+// false for something that cannot be fed straight into a stream.
+static bool DsWaveFormatToSdl(const WAVEFORMATEX *fx, SDL_AudioFormat *outFormat)
+{
+    if (!fx)
+    {
+        return false;
+    }
+    if (fx->wFormatTag != WAVE_FORMAT_PCM)
+    {
+        // WAVE_FORMAT_EXTENSIBLE (0xFFFE) and everything compressed is left to
+        // SDL: the game only ships plain PCM.
+        return false;
+    }
+
+    if (fx->wBitsPerSample == 8)
+    {
+        *outFormat = SDL_AUDIO_U8;
+        return true;
+    }
+    if (fx->wBitsPerSample == 16)
+    {
+        *outFormat = SDL_AUDIO_S16LE;
+        return true;
+    }
+    return false;
+}
+
+static void DsMakeSpec(const WAVEFORMATEX *fx, SDL_AudioFormat format,
+                       SDL_AudioSpec *spec)
+{
+    spec->format = format;
+    spec->channels = (int)fx->nChannels;
+    spec->freq = (int)fx->nSamplesPerSec;
+}
+
+// Bytes of PCM that make up one sample frame of the stream.
+static u32 DsFrameSize(const SDL_AudioSpec *spec)
+{
+    return (u32)SDL_AUDIO_BYTESIZE(spec->format) * (u32)spec->channels;
+}
 
 //-----------------------------------------------------------------------------
 // Name: CSoundManager::CSoundManager()
@@ -22,7 +103,7 @@
 // FUNCTION: TH07 0x0045c6f0 FOLDED
 CSoundManager::CSoundManager()
 {
-    pDS = NULL;
+    this->audioDevice = 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -32,90 +113,110 @@ CSoundManager::CSoundManager()
 // FUNCTION: TH07 0x0045c710
 CSoundManager::~CSoundManager()
 {
-    SAFE_RELEASE(pDS);
+    this->Release();
 }
 
 //-----------------------------------------------------------------------------
 // Name: CSoundManager::Initialize()
-// Desc: Initializes the IDirectSound object and also sets the primary buffer
-//       format.  This function must be called before any others.
+// Desc: Initializes the SDL audio subsystem. This function must be called
+//       before any others.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045c740
 HRESULT CSoundManager::Initialize(HWND hWnd, DWORD dwCoopLevel,
                                   DWORD dwPrimaryChannels, DWORD dwPrimaryFreq,
                                   DWORD dwPrimaryBitRate)
 {
-    DWORD idk;
-    HRESULT hr;
+    this->Release();
 
-    idk = 0;
-    SAFE_RELEASE(this->pDS);
+    // The window handle and cooperative level are DirectSound concepts; SDL
+    // opens the default playback device instead.
+    (void)hWnd;
+    (void)dwCoopLevel;
 
-    if (FAILED(hr = DirectSoundCreate8(NULL, &this->pDS, NULL)))
+    // SDL_InitSubSystem is reference counted and safe to call again: the video
+    // subsystem is already up by the time the game gets here, and this adds
+    // (or reuses) audio.
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
-        return hr;
+        SDL_Log("audio: SDL_InitSubSystem(SDL_INIT_AUDIO) failed: %s",
+                SDL_GetError());
+        return E_FAIL;
     }
 
-    if (FAILED(hr = this->pDS->SetCooperativeLevel(hWnd, dwCoopLevel)))
+    // HRESULT success is S_OK == 0, so this has to be tested with FAILED() rather than
+    // the logical-not a plain boolean would use.
+    if (FAILED(SetPrimaryBufferFormat(dwPrimaryChannels, dwPrimaryFreq,
+                                      dwPrimaryBitRate)))
     {
-        return hr;
+        SDL_Log("audio: SetPrimaryBufferFormat failed: %s", SDL_GetError());
+        return E_FAIL;
     }
 
-    SetPrimaryBufferFormat(dwPrimaryChannels, dwPrimaryFreq, dwPrimaryBitRate);
     return S_OK;
 }
 
 //-----------------------------------------------------------------------------
 // Name: CSoundManager::SetPrimaryBufferFormat()
-// Desc: Set primary buffer to a specified format
+// Desc: Checks that the device SDL would pick can play what the game asks for.
+//       The explicit format is no longer set on a primary buffer; the request
+//       is recorded so the per-sound streams know what to open.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045c7d0
 HRESULT CSoundManager::SetPrimaryBufferFormat(DWORD dwPrimaryChannels,
                                               DWORD dwPrimaryFreq,
                                               DWORD dwPrimaryBitRate)
 {
-    HRESULT hr;
+    SDL_AudioSpec spec;
 
-    LPDIRECTSOUNDBUFFER pDSBPrimary = NULL;
-    if (!this->pDS)
+    if (!SDL_WasInit(SDL_INIT_AUDIO))
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    DSBUFFERDESC dsbd;
-    ZeroMemory(&dsbd, sizeof(DSBUFFERDESC));
-    dsbd.dwSize = sizeof(DSBUFFERDESC);
-    dsbd.dwFlags = DSBCAPS_PRIMARYBUFFER;
-    dsbd.dwBufferBytes = 0;
-    dsbd.lpwfxFormat = NULL;
-
-    if (FAILED(hr = this->pDS->CreateSoundBuffer(&dsbd, &pDSBPrimary, NULL)))
+    SDL_zero(spec);
+    spec.format = SDL_AUDIO_S16LE;
+    spec.channels = (int)dwPrimaryChannels;
+    spec.freq = (int)dwPrimaryFreq;
+    if (dwPrimaryBitRate == 8)
     {
-        return hr;
+        spec.format = SDL_AUDIO_U8;
+    }
+    if (spec.channels <= 0)
+    {
+        spec.channels = 2;
+    }
+    if (spec.freq <= 0)
+    {
+        spec.freq = 44100;
     }
 
-    WAVEFORMATEX wfx;
-    ZeroMemory(&wfx, sizeof(WAVEFORMATEX));
-    wfx.wFormatTag = WAVE_FORMAT_PCM;
-    wfx.nChannels = (WORD)dwPrimaryChannels;
-    wfx.nSamplesPerSec = dwPrimaryFreq;
-    wfx.wBitsPerSample = (WORD)dwPrimaryBitRate;
-    wfx.nBlockAlign = wfx.wBitsPerSample / 8 * wfx.nChannels;
-    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
-
-    hr = pDSBPrimary->SetFormat(&wfx);
-    if (FAILED(hr))
-    {
-        return hr;
-    }
-
-    SAFE_RELEASE(pDSBPrimary);
+    // Nothing to bind yet; this just proves the subsystem is usable. SDL
+    // converts to whatever the hardware wants, so checking the device list is
+    // as much as is needed here.
+    this->audioDevice = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
     return S_OK;
 }
 
 //-----------------------------------------------------------------------------
+// Name: CSoundManager::Release()
+// Desc: Drops the SDL audio subsystem again.
+//-----------------------------------------------------------------------------
+void CSoundManager::Release()
+{
+    if (this->audioDevice != 0 && SDL_WasInit(SDL_INIT_AUDIO))
+    {
+        // Every stream is closed by the time this runs (SoundPlayer::Release
+        // deletes the sounds first), so there is nothing left holding the
+        // device. Quitting the subsystem is reference counted with the video
+        // init that main.cpp/the renderer did.
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    }
+    this->audioDevice = 0;
+}
+
+//-----------------------------------------------------------------------------
 // Name: CSoundManager::CreateStreaming()
-// Desc:
+// Desc: Opens a ZWAV archive entry as a streaming sound.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045c8e0
 HRESULT CSoundManager::CreateStreaming(CStreamingSound **ppStreamingSound,
@@ -123,163 +224,67 @@ HRESULT CSoundManager::CreateStreaming(CStreamingSound **ppStreamingSound,
                                        DWORD dwCreationFlags,
                                        GUID guid3DAlgorithm,
                                        DWORD dwNotifyCount, DWORD dwNotifySize,
-                                       HANDLE hNotifyEvent, ThBgmFormat *pzwf)
+                                       ThBgmFormat *pzwf)
 {
-    HRESULT hr;
+    CWaveFile *pWaveFile;
 
-    if (!this->pDS)
+    // DirectSound buffer flags and notification parameters: meaningless to
+    // SDL, which pulls data on its own schedule.
+    (void)dwCreationFlags;
+    (void)guid3DAlgorithm;
+    (void)dwNotifyCount;
+    (void)dwNotifySize;
+
+    if (!this->IsValid())
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    LPDIRECTSOUNDBUFFER pDSBuffer = NULL;
-    CWaveFile *pWaveFile = NULL;
-    LPDSBPOSITIONNOTIFY aPosNotify = NULL;
-    LPDIRECTSOUNDNOTIFY pDSNotify = NULL;
-
     pWaveFile = new CWaveFile();
-
-    if (pWaveFile->Open(strWaveFileName, pzwf, WAVEFILE_READ))
+    if (FAILED(pWaveFile->Open(strWaveFileName, pzwf, WAVEFILE_READ)))
     {
         delete pWaveFile;
         return E_FAIL;
     }
-    DWORD dwDSBufferSize = dwNotifySize * dwNotifyCount;
-    DSBUFFERDESC dsbd;
-    ZeroMemory(&dsbd, sizeof(DSBUFFERDESC));
-    dsbd.dwSize = sizeof(DSBUFFERDESC);
-    dsbd.dwFlags = dwCreationFlags | DSBCAPS_CTRLPOSITIONNOTIFY |
-                   DSBCAPS_GLOBALFOCUS | DSBCAPS_GETCURRENTPOSITION2 |
-                   DSBCAPS_CTRLVOLUME | DSBCAPS_LOCSOFTWARE;
-    dsbd.dwBufferBytes = dwDSBufferSize;
-    dsbd.guid3DAlgorithm = guid3DAlgorithm;
-    dsbd.lpwfxFormat = &pWaveFile->m_pzwf->format;
-
-    if (FAILED(hr = this->pDS->CreateSoundBuffer(&dsbd, &pDSBuffer, NULL)))
-    {
-        return E_FAIL;
-    }
-
-    if (FAILED(hr = pDSBuffer->QueryInterface(IID_IDirectSoundNotify,
-                                              (VOID **)&pDSNotify)))
-    {
-        return E_FAIL;
-    }
-
-    aPosNotify = new DSBPOSITIONNOTIFY[dwNotifyCount];
-    if (!aPosNotify)
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    for (DWORD i = 0; i < dwNotifyCount; i++)
-    {
-        aPosNotify[i].dwOffset = dwNotifySize * i + dwNotifySize - 1;
-        aPosNotify[i].hEventNotify = hNotifyEvent;
-    }
-
-    if (FAILED(hr = pDSNotify->SetNotificationPositions(dwNotifyCount,
-                                                        aPosNotify)))
-    {
-        SAFE_RELEASE(pDSNotify);
-        SAFE_DELETE_ARRAY(aPosNotify);
-        return E_FAIL;
-    }
-
-    SAFE_RELEASE(pDSNotify);
-    SAFE_DELETE_ARRAY(aPosNotify);
 
     *ppStreamingSound =
-        new CStreamingSound(pDSBuffer, dwDSBufferSize, pWaveFile, dwNotifySize);
-
-    (*ppStreamingSound)->m_dsbd = dsbd;
-    (*ppStreamingSound)->m_pSoundManager = this;
-    (*ppStreamingSound)->m_hNotifyEvent = hNotifyEvent;
-    (*ppStreamingSound)->m_bIsLocked = FALSE;
+        new CStreamingSound(pWaveFile, pzwf, SDLSND_STREAM_CHUNK_SIZE);
+    (*ppStreamingSound)->m_dwPriority = 0;
 
     return S_OK;
 }
 
 //-----------------------------------------------------------------------------
 // Name: CSoundManager::CreateStreamingFromMemory()
-// Desc:
+// Desc: Opens a preloaded BGM blob as a streaming sound.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045cc30
 HRESULT CSoundManager::CreateStreamingFromMemory(
     CStreamingSound **ppStreamingSound, u8 *pbData, ULONG ulDataSize,
     ThBgmFormat *pzwf, DWORD dwCreationFlags, GUID guid3DAlgorithm,
-    DWORD dwNotifyCount, DWORD dwNotifySize, HANDLE hNotifyEvent)
+    DWORD dwNotifyCount, DWORD dwNotifySize)
 {
-    HRESULT hr;
+    CWaveFile *pWaveFile;
+
+    (void)dwCreationFlags;
+    (void)guid3DAlgorithm;
+    (void)dwNotifyCount;
+    (void)dwNotifySize;
 
     // STRING: TH07 0x0049548c
     utils::DebugPrint("StreamingSound Create \r\n");
-    if (!this->pDS)
+    if (!this->IsValid())
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    LPDIRECTSOUNDBUFFER pDSBuffer = NULL;
-    CWaveFile *pWaveFile = NULL;
-    LPDSBPOSITIONNOTIFY aPosNotify = NULL;
-    LPDIRECTSOUNDNOTIFY pDSNotify = NULL;
-
     pWaveFile = new CWaveFile();
     pWaveFile->OpenFromMemory(pbData, ulDataSize, pzwf, 0);
 
-    DWORD dwDSBufferSize = dwNotifySize * dwNotifyCount;
-    DSBUFFERDESC dsbd;
-    ZeroMemory(&dsbd, sizeof(DSBUFFERDESC));
-    dsbd.dwSize = sizeof(DSBUFFERDESC);
-    dsbd.dwFlags = dwCreationFlags | DSBCAPS_CTRLPOSITIONNOTIFY |
-                   DSBCAPS_GLOBALFOCUS | DSBCAPS_GETCURRENTPOSITION2 |
-                   DSBCAPS_CTRLVOLUME | DSBCAPS_LOCSOFTWARE;
-    dsbd.dwBufferBytes = dwDSBufferSize;
-    dsbd.guid3DAlgorithm = guid3DAlgorithm;
-    dsbd.lpwfxFormat = &pWaveFile->m_pzwf->format;
-
-    if (FAILED(hr = this->pDS->CreateSoundBuffer(&dsbd, &pDSBuffer, NULL)))
-    {
-        return E_FAIL;
-    }
-
-    if (FAILED(hr = pDSBuffer->QueryInterface(IID_IDirectSoundNotify,
-                                              (VOID **)&pDSNotify)))
-    {
-        return E_FAIL;
-    }
-
-    aPosNotify = new DSBPOSITIONNOTIFY[dwNotifyCount];
-    if (!aPosNotify)
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    for (DWORD i = 0; i < dwNotifyCount; i++)
-    {
-        aPosNotify[i].dwOffset = dwNotifySize * i + dwNotifySize - 1;
-        aPosNotify[i].hEventNotify = hNotifyEvent;
-    }
-
-    if (FAILED(hr = pDSNotify->SetNotificationPositions(dwNotifyCount,
-                                                        aPosNotify)))
-    {
-        SAFE_RELEASE(pDSNotify);
-        SAFE_DELETE_ARRAY(aPosNotify);
-        return E_FAIL;
-    }
-
-    SAFE_RELEASE(pDSNotify);
-    SAFE_DELETE_ARRAY(aPosNotify);
-
     *ppStreamingSound =
-        new CStreamingSound(pDSBuffer, dwDSBufferSize, pWaveFile, dwNotifySize);
-    ;
+        new CStreamingSound(pWaveFile, pzwf, SDLSND_STREAM_CHUNK_SIZE);
+    (*ppStreamingSound)->m_dwPriority = 0;
 
-    (*ppStreamingSound)->m_dsbd = dsbd;
-    (*ppStreamingSound)->m_pSoundManager = this;
-    (*ppStreamingSound)->m_hNotifyEvent = hNotifyEvent;
-    (*ppStreamingSound)->m_bIsLocked = FALSE;
     // STRING: TH07 0x00495480
     utils::DebugPrint("Success \r\n");
 
@@ -288,90 +293,71 @@ HRESULT CSoundManager::CreateStreamingFromMemory(
 
 //-----------------------------------------------------------------------------
 // Name: CSound::CSound()
-// Desc: Constructs the class
+// Desc: Constructs the class. The PCM is copied, so the caller may release
+//       whatever buffer it passed in.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045cf50
-CSound::CSound(LPDIRECTSOUNDBUFFER *apDSBuffer, DWORD dwDSBufferSize,
-               DWORD dwNumBuffers, CWaveFile *pWaveFile)
+CSound::CSound(u8 *pbData, DWORD dwDataSize, DWORD dwNumBuffers,
+               CWaveFile *pWaveFile, const WAVEFORMATEX *pFormat)
 {
-    DWORD i;
+    SDL_AudioFormat format;
+    u8 *copy;
+    i32 i;
 
-    this->m_apDSBuffer = new LPDIRECTSOUNDBUFFER[dwNumBuffers];
-    for (i = 0; i < dwNumBuffers; i++)
-    {
-        this->m_apDSBuffer[i] = apDSBuffer[i];
-    }
-    this->m_dwDSBufferSize = dwDSBufferSize;
-    this->m_dwNumBuffers = dwNumBuffers;
+    this->m_pAudioStream = NULL;
+    SDL_zero(this->m_streamSpec);
+    this->m_pData = NULL;
+    this->m_dataSize = 0;
     this->m_pWaveFile = pWaveFile;
-
-    FillBufferWithSound(this->m_apDSBuffer[0], FALSE);
-
-    for (i = 0; i < dwNumBuffers; i++)
-    {
-        this->m_apDSBuffer[i]->SetCurrentPosition(0);
-    }
+    this->m_dwNumBuffers = dwNumBuffers > 0 ? dwNumBuffers : 1;
+    this->m_iCurFadeoutProgress = 0;
+    this->m_iTotalFadeout = 0;
+    this->m_dwIsFadingOut = 0;
+    this->m_dwPriority = 0;
+    this->m_dwFlags = 0;
+    this->unused_28 = 0;
+    this->unused_2c = 0;
     this->m_bIsPlaying = FALSE;
-}
-
-//-----------------------------------------------------------------------------
-// Name: CStreamingSound::InitSoundBuffers()
-// Desc:
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0045d060
-HRESULT CStreamingSound::InitSoundBuffers()
-{
-    DWORD i;
-
-    this->m_bIsPlaying = FALSE;
-    for (i = 0; i < this->m_dwNumBuffers; i++)
+    this->m_voices = new Voice[this->m_dwNumBuffers];
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
     {
-        SAFE_RELEASE(this->m_apDSBuffer[i]);
+        this->m_voices[i].position = 0;
+        this->m_voices[i].length = 0;
+        this->m_voices[i].gain = 1.0f;
+        this->m_voices[i].active = false;
+        this->m_voices[i].startedAt = 0;
     }
-    SAFE_DELETE_ARRAY(this->m_apDSBuffer);
+    this->m_soundVolume = 0;
+    this->m_lock = SDL_CreateMutex();
+    this->m_mixEpoch = SDL_GetTicks();
 
-    LPDSBPOSITIONNOTIFY pPosNotify = NULL;
-    LPDIRECTSOUNDNOTIFY pDSNotify = NULL;
-    this->m_apDSBuffer = new LPDIRECTSOUNDBUFFER[this->m_dwNumBuffers];
-
-    for (i = 0; i < this->m_dwNumBuffers; i++)
+    // Keep our own copy of the samples: the caller frees its file buffer as
+    // soon as LoadSound returns.
+    copy = NULL;
+    if (pbData && dwDataSize)
     {
-        if (FAILED(this->m_pSoundManager->pDS->CreateSoundBuffer(
-                &this->m_dsbd, &this->m_apDSBuffer[i], NULL)))
+        copy = (u8 *)malloc(dwDataSize);
+        if (copy)
         {
-            return E_FAIL;
+            memcpy(copy, pbData, dwDataSize);
+            this->m_pData = copy;
+            this->m_dataSize = dwDataSize;
         }
-
-        if (FAILED(this->m_apDSBuffer[i]->QueryInterface(IID_IDirectSoundNotify,
-                                                         (void **)&pDSNotify)))
-        {
-            return E_FAIL;
-        }
-
-        pPosNotify = new DSBPOSITIONNOTIFY[16];
-        if (!pPosNotify)
-        {
-            return E_OUTOFMEMORY;
-        }
-
-        for (DWORD j = 0; j < 16; j++)
-        {
-            pPosNotify[j].dwOffset =
-                this->m_dwNotifySize * j + this->m_dwNotifySize - 1;
-            pPosNotify[j].hEventNotify = this->m_hNotifyEvent;
-        }
-
-        if (FAILED(pDSNotify->SetNotificationPositions(16, pPosNotify)))
-        {
-            SAFE_RELEASE(pDSNotify);
-            SAFE_DELETE_ARRAY(pPosNotify);
-            return E_FAIL;
-        }
-
-        SAFE_RELEASE(pDSNotify);
-        SAFE_DELETE_ARRAY(pPosNotify);
     }
-    return S_OK;
+
+    if (pFormat)
+    {
+        this->ReopenStream(pFormat);
+    }
+    else
+    {
+        SDL_AudioSpec spec;
+        SDL_zero(spec);
+        spec.format = SDL_AUDIO_S16LE;
+        spec.channels = 2;
+        spec.freq = 44100;
+        this->m_streamSpec = spec;
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -381,239 +367,403 @@ HRESULT CStreamingSound::InitSoundBuffers()
 // FUNCTION: TH07 0x0045d2c0
 CSound::~CSound()
 {
-    for (DWORD i = 0; i < this->m_dwNumBuffers; i++)
+    // Destroying the stream unbinds it from the device and closes the device
+    // that SDL_OpenAudioDeviceStream opened, so the audio callbacks stop here.
+    if (this->m_pAudioStream)
     {
-        SAFE_RELEASE(this->m_apDSBuffer[i]);
+        SDL_DestroyAudioStream(this->m_pAudioStream);
     }
-    SAFE_DELETE_ARRAY(this->m_apDSBuffer);
-    SAFE_DELETE(this->m_pWaveFile);
+    this->m_pAudioStream = NULL;
+    if (this->m_lock)
+    {
+        SDL_DestroyMutex(this->m_lock);
+    }
+    this->m_lock = NULL;
+    if (this->m_pData)
+    {
+        free((void *)this->m_pData);
+    }
+    this->m_pData = NULL;
+    this->m_dataSize = 0;
+    delete[] this->m_voices;
+    this->m_voices = NULL;
+    delete this->m_pWaveFile;
+    this->m_pWaveFile = NULL;
 }
 
 //-----------------------------------------------------------------------------
-// Name: CSound::FillBufferWithSound()
-// Desc: Fills a DirectSound buffer with a sound file
+// Name: CSound::SetVolume()
+// Desc: Sets how loud this sound plays, in hundredths of a decibel, the same
+//       units the old DirectSound buffer volume used. Applied per voice when the
+//       samples are mixed.
 //-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0045d3c0
-HRESULT CSound::FillBufferWithSound(LPDIRECTSOUNDBUFFER pDSB,
-                                    BOOL bRepeatWavIfBufferLarger)
+void CSound::SetVolume(i32 dwVolume)
 {
-    HRESULT hr;
-    VOID *pDSLockedBuffer = NULL;
-    DWORD dwDSLockedBufferSize = 0;
-    DWORD dwWavDataRead = 0;
+    this->m_soundVolume = dwVolume;
+}
 
-    if (!pDSB)
+//-----------------------------------------------------------------------------
+// Name: CSound::ReopenStream()
+// Desc: (Re)creates the audio stream with the format of the WAV being played,
+//       so the device never has to guess.
+//-----------------------------------------------------------------------------
+void CSound::ReopenStream(const WAVEFORMATEX *format)
+{
+    SDL_AudioFormat sdlFormat;
+    SDL_AudioSpec spec;
+    SDL_AudioStream *stream;
+    i32 i;
+
+    if (!format || !DsWaveFormatToSdl(format, &sdlFormat))
     {
-        return CO_E_NOTINITIALIZED;
+        return;
+    }
+    if (format->nChannels == 0 || format->nChannels > 8 ||
+        format->nSamplesPerSec == 0)
+    {
+        return;
     }
 
-    if (FAILED(hr = RestoreBuffer(pDSB, NULL)))
+    DsMakeSpec(format, sdlFormat, &spec);
+
+    SDL_LockMutex(this->m_lock);
+    if (this->m_pAudioStream)
     {
-        return hr;
+        SDL_DestroyAudioStream(this->m_pAudioStream);
+        this->m_pAudioStream = NULL;
+    }
+    this->m_streamSpec = spec;
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
+    {
+        this->m_voices[i].active = false;
+        this->m_voices[i].position = 0;
+        this->m_voices[i].length = 0;
+    }
+    this->m_bIsPlaying = FALSE;
+    SDL_UnlockMutex(this->m_lock);
+
+    // SDL_OpenAudioDeviceStream takes the stream's own format as the spec and
+    // leaves the device paused until the first Play().
+    stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                                       CSound::StreamGetCallback, this);
+    if (!stream)
+    {
+        SDL_Log("audio: SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
+        return;
     }
 
-    if (FAILED(hr = pDSB->Lock(0, this->m_dwDSBufferSize, &pDSLockedBuffer,
-                               &dwDSLockedBufferSize, NULL, NULL, 0)))
+    SDL_LockMutex(this->m_lock);
+    this->m_pAudioStream = stream;
+    SDL_UnlockMutex(this->m_lock);
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::StreamGetCallback()
+// Desc: SDL asks for more samples; mix the active voices into the stream.
+//       Runs on whichever thread drives the audio device.
+//-----------------------------------------------------------------------------
+void SDLCALL CSound::StreamGetCallback(void *userdata, SDL_AudioStream *stream,
+                                       int additional_amount,
+                                       int total_amount)
+{
+    (void)total_amount;
+    ((CSound *)userdata)->StreamGet(stream, additional_amount);
+}
+
+void CSound::StreamGet(SDL_AudioStream *stream, int additional_amount)
+{
+    u8 *scratch;
+
+    if (!stream || additional_amount <= 0 || this->FadeOutShouldSkip())
     {
-        return hr;
+        return;
     }
 
-    this->m_pWaveFile->ResetFile(false);
-
-    if (FAILED(hr = this->m_pWaveFile->Read(
-                   (u8 *)pDSLockedBuffer, dwDSLockedBufferSize, &dwWavDataRead)))
+    scratch = (u8 *)malloc((size_t)additional_amount);
+    if (!scratch)
     {
-        return hr;
+        return;
+    }
+    memset(scratch, 0, (size_t)additional_amount);
+    this->MixVoices(scratch, (u32)additional_amount, this->m_streamSpec);
+    SDL_PutAudioStreamData(stream, scratch, additional_amount);
+    free(scratch);
+}
+
+// True when a fade-out scheduled by FadeOut() has run its course. Called from
+// the audio thread, so the counters are only read.
+bool CSound::FadeOutShouldSkip()
+{
+    return this->m_dwIsFadingOut != 0 && this->m_iCurFadeoutProgress <= 0;
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::MixVoices()
+// Desc: Adds every active voice into the 8/16-bit PCM buffer, scaled by the
+//       voice gain and the sound volume.
+//-----------------------------------------------------------------------------
+void CSound::MixVoices(u8 *buffer, u32 bytes, const SDL_AudioSpec &spec)
+{
+    u32 frameSize;
+    u32 frames;
+    u32 frame;
+    i32 i;
+    f32 master;
+    Uint64 elapsed;
+
+    if (!this->m_pData || this->m_dataSize == 0)
+    {
+        return;
     }
 
-    if (dwWavDataRead == 0)
+    frameSize = DsFrameSize(&spec);
+    if (frameSize == 0 || !SDLSND_ASSERT_PCM_FORMAT(spec.format))
     {
-        FillMemory(pDSLockedBuffer, dwDSLockedBufferSize,
-                   (BYTE)(this->m_pWaveFile->m_pzwf->format.wBitsPerSample == 8
-                              ? 128
-                              : 0));
+        return;
     }
-    else if (dwWavDataRead < dwDSLockedBufferSize)
+    frames = bytes / frameSize;
+    master = DsVolumeToLinear(this->m_soundVolume);
+    // Timestamped voices are placed by when they started, not by how many
+    // samples have already been mixed: SDL only calls this when the device wants
+    // data, so mixing alone would stretch a short effect over a long idle gap.
+    elapsed = 0;
+    if (spec.freq > 0)
     {
-        if (bRepeatWavIfBufferLarger)
+        elapsed = SDL_GetTicks() - this->m_mixEpoch;
+    }
+
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
+    {
+        Voice *voice = &this->m_voices[i];
+        u32 start = voice->position;
+        f32 gain;
+
+        if (!voice->active)
         {
-            DWORD dwReadSoFar = dwWavDataRead;
-            while (dwReadSoFar < dwDSLockedBufferSize)
+            continue;
+        }
+
+        if (voice->startedAt)
+        {
+            Uint64 sinceStart = SDL_GetTicks() - voice->startedAt;
+            sinceStart = sinceStart > elapsed ? sinceStart - elapsed : 0;
+            start = (u32)(sinceStart * (Uint64)spec.freq *
+                          (Uint64)frameSize / 1000u);
+            start -= start % frameSize;
+            if (start >= voice->length)
             {
-                hr = this->m_pWaveFile->ResetFile(false);
-                if (FAILED(hr))
-                {
-                    return hr;
-                }
-                hr = this->m_pWaveFile->Read((u8 *)pDSLockedBuffer + dwReadSoFar,
-                                             dwDSLockedBufferSize - dwReadSoFar,
-                                             &dwWavDataRead);
-                if (FAILED(hr))
-                {
-                    return hr;
-                }
-                dwReadSoFar += dwWavDataRead;
+                voice->active = false;
+                continue;
             }
         }
-        else
+
+        gain = voice->gain * master;
+        for (frame = 0; frame < frames; frame++)
         {
-            FillMemory((u8 *)pDSLockedBuffer + dwWavDataRead,
-                       dwDSLockedBufferSize - dwWavDataRead,
-                       (BYTE)(this->m_pWaveFile->m_pzwf->format.wBitsPerSample == 8
-                                  ? 128
-                                  : 0));
-        }
-    }
+            u32 at = start + frame * frameSize;
+            u32 out = frame * frameSize;
 
-    pDSB->Unlock(pDSLockedBuffer, dwDSLockedBufferSize, NULL, 0);
-    return S_OK;
-}
-
-//-----------------------------------------------------------------------------
-// Name: CSound::RestoreBuffer()
-// Desc:
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0045d5b0
-HRESULT CSound::RestoreBuffer(LPDIRECTSOUNDBUFFER pDSB, BOOL *pbWasRestored)
-{
-    if (!pDSB)
-    {
-        return CO_E_NOTINITIALIZED;
-    }
-
-    if (pbWasRestored)
-    {
-        *pbWasRestored = FALSE;
-    }
-
-    DWORD dwStatus;
-    HRESULT hr;
-    if (FAILED(hr = pDSB->GetStatus(&dwStatus)))
-    {
-        return hr;
-    }
-
-    if (dwStatus & DSBSTATUS_BUFFERLOST)
-    {
-        do
-        {
-            hr = pDSB->Restore();
-            if (hr == DSERR_BUFFERLOST)
-            {
-                Sleep(10);
-            }
-        } while (hr = pDSB->Restore());
-
-        if (pbWasRestored)
-        {
-            *pbWasRestored = TRUE;
-        }
-        return S_OK;
-    }
-    else
-    {
-        return S_FALSE;
-    }
-}
-
-//-----------------------------------------------------------------------------
-// Name: CSound::GetFreeBuffer()
-// Desc:
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0045d660
-LPDIRECTSOUNDBUFFER CSound::GetFreeBuffer()
-{
-    BOOL idk = 0;
-    if (!this->m_apDSBuffer)
-    {
-        return NULL;
-    }
-
-    DWORD i;
-    for (i = 0; i < this->m_dwNumBuffers; i++)
-    {
-        if (this->m_apDSBuffer[i])
-        {
-            DWORD dwStatus = 0;
-            this->m_apDSBuffer[i]->GetStatus(&dwStatus);
-            if ((dwStatus & DSBSTATUS_PLAYING) == 0)
+            if (at >= voice->length || at + frameSize > this->m_dataSize)
             {
                 break;
             }
+
+            if (spec.format == SDL_AUDIO_S16LE)
+            {
+                for (i32 channel = 0; channel < spec.channels; channel++)
+                {
+                    i16 sample = *(const i16 *)(this->m_pData + at + channel * 2);
+                    // Halve what is already there so a pile-up of effects
+                    // cannot clip instantly.
+                    i32 mixed = *(i16 *)(buffer + out + channel * 2) / 2;
+                    mixed += (i32)((f32)sample * gain);
+                    if (mixed > 32767)
+                    {
+                        mixed = 32767;
+                    }
+                    else if (mixed < -32768)
+                    {
+                        mixed = -32768;
+                    }
+                    *(i16 *)(buffer + out + channel * 2) = (i16)mixed;
+                }
+            }
+            else if (spec.format == SDL_AUDIO_U8)
+            {
+                for (i32 channel = 0; channel < spec.channels; channel++)
+                {
+                    // U8 PCM is centred on 128.
+                    i32 sample = (i32)this->m_pData[at + channel] - 128;
+                    i32 mixed = ((i32)buffer[out + channel] - 128) / 2;
+                    mixed += (i32)((f32)sample * gain);
+                    if (mixed > 127)
+                    {
+                        mixed = 127;
+                    }
+                    else if (mixed < -128)
+                    {
+                        mixed = -128;
+                    }
+                    buffer[out + channel] = (u8)(mixed + 128);
+                }
+            }
+        }
+
+        if (!voice->startedAt)
+        {
+            voice->position = start + frames * frameSize;
+            if (voice->position >= voice->length)
+            {
+                voice->active = false;
+            }
         }
     }
 
-    if (i != this->m_dwNumBuffers)
-    {
-        return this->m_apDSBuffer[i];
-    }
-    else
-    {
-        return this->m_apDSBuffer[rand() % this->m_dwNumBuffers];
-    }
+    this->m_mixEpoch += (Uint64)frames * 1000u / (Uint64)(spec.freq > 0 ? spec.freq : 1);
 }
 
 //-----------------------------------------------------------------------------
-// Name: CSound::GetBuffer()
-// Desc:
+// Name: CSound::Pump()
+// Desc: Refill the stream after its contents were consumed. Left as a no-op:
+//       the get-callback does this, and queueing here as well would play every
+//       sound twice.
 //-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0045d720
-LPDIRECTSOUNDBUFFER CSound::GetBuffer(DWORD dwIndex)
+u32 CSound::Pump()
 {
-    if (!this->m_apDSBuffer)
+    return 0;
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::StopVoices()
+// Desc: Silences every voice of this sound.
+//-----------------------------------------------------------------------------
+void CSound::StopVoices()
+{
+    i32 i;
+
+    SDL_LockMutex(this->m_lock);
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
     {
-        return NULL;
+        this->m_voices[i].active = false;
+        this->m_voices[i].position = 0;
+        this->m_voices[i].length = 0;
+        this->m_voices[i].startedAt = 0;
     }
-    if (dwIndex >= this->m_dwNumBuffers)
+    this->m_bIsPlaying = FALSE;
+    SDL_UnlockMutex(this->m_lock);
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::CountVoices()
+// Desc: How many voices are currently sounding.
+//-----------------------------------------------------------------------------
+u32 CSound::CountVoices()
+{
+    u32 count = 0;
+    i32 i;
+
+    SDL_LockMutex(this->m_lock);
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
     {
-        return NULL;
+        if (this->m_voices[i].active)
+        {
+            count++;
+        }
     }
-    return this->m_apDSBuffer[dwIndex];
+    SDL_UnlockMutex(this->m_lock);
+    return count;
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::IsAudioPending()
+// Desc: True while this sound still has samples queued for the device.
+//-----------------------------------------------------------------------------
+bool CSound::IsAudioPending()
+{
+    bool pending;
+
+    SDL_LockMutex(this->m_lock);
+    pending = this->m_pAudioStream != NULL &&
+              SDL_GetAudioStreamQueued(this->m_pAudioStream) > 0;
+    SDL_UnlockMutex(this->m_lock);
+    return pending;
 }
 
 //-----------------------------------------------------------------------------
 // Name: CSound::Play()
-// Desc:
+// Desc: Starts a new voice.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045d760
 HRESULT CSound::Play(DWORD dwPriority, DWORD dwFlags)
 {
-    HRESULT hr;
+    CStreamingSound *streaming;
+    i32 slot;
+    i32 i;
+    u32 frameSize;
 
-    if (!this->m_apDSBuffer)
+    if (!this->m_pAudioStream || !this->m_pData || this->m_dataSize == 0)
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    LPDIRECTSOUNDBUFFER pDSB = GetFreeBuffer();
-    if (!pDSB)
+    frameSize = DsFrameSize(&this->m_streamSpec);
+    if (frameSize == 0)
     {
         return E_FAIL;
     }
 
-    BOOL bRestored;
-    if (FAILED(hr = RestoreBuffer(pDSB, &bRestored)))
+    SDL_LockMutex(this->m_lock);
+
+    // First idle voice, otherwise recycle the one that is furthest along.
+    slot = -1;
+    for (i = 0; i < (i32)this->m_dwNumBuffers; i++)
     {
-        return hr;
-    }
-    if (bRestored)
-    {
-        hr = FillBufferWithSound(pDSB, FALSE);
-        if (FAILED(hr))
+        if (!this->m_voices[i].active)
         {
-            return hr;
+            slot = i;
+            break;
         }
-        Reset();
+        if (slot < 0 || this->m_voices[i].position > this->m_voices[slot].position)
+        {
+            slot = i;
+        }
     }
+    if (slot < 0)
+    {
+        SDL_UnlockMutex(this->m_lock);
+        return E_FAIL;
+    }
+
+    this->m_voices[slot].position = 0;
+    this->m_voices[slot].length = this->m_dataSize - this->m_dataSize % frameSize;
+    this->m_voices[slot].gain = 1.0f;
+    this->m_voices[slot].active = true;
+    // One-shot effects get a start time; streaming sounds have none.
+    streaming = dynamic_cast<CStreamingSound *>(this);
+    if (streaming == NULL)
+    {
+        this->m_voices[slot].startedAt = SDL_GetTicks();
+    }
+    else
+    {
+        this->m_voices[slot].startedAt = 0;
+    }
+
     this->m_dwIsFadingOut = 0;
     this->m_iCurFadeoutProgress = 0;
     this->m_iTotalFadeout = 0;
-    this->m_apDSBuffer[0]->SetVolume(0);
     this->m_bIsPlaying = TRUE;
     this->m_dwPriority = dwPriority;
     this->m_dwFlags = dwFlags;
     this->unused_2c = 0;
-    return pDSB->Play(0, dwPriority, dwFlags);
+
+    SDL_UnlockMutex(this->m_lock);
+
+    if (SDL_AudioStreamDevicePaused(this->m_pAudioStream))
+    {
+        SDL_ResumeAudioStreamDevice(this->m_pAudioStream);
+    }
+    return S_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -623,20 +773,20 @@ HRESULT CSound::Play(DWORD dwPriority, DWORD dwFlags)
 // FUNCTION: TH07 0x0045d860
 u32 CSound::Stop()
 {
-    if (!this->m_apDSBuffer)
-    {
-        return CO_E_NOTINITIALIZED;
-    }
-
-    HRESULT hr = 0;
-    this->m_bIsPlaying = FALSE;
-    for (DWORD i = 0; i < this->m_dwNumBuffers; i++)
-    {
-        hr |= this->m_apDSBuffer[i]->Stop();
-        hr |= this->m_apDSBuffer[i]->SetCurrentPosition(0);
-    }
+    this->StopVoices();
     this->m_dwIsFadingOut = 0;
-    return hr;
+
+    SDL_LockMutex(this->m_lock);
+    if (this->m_pAudioStream)
+    {
+        // Whatever is already queued is still played; dropping it here would
+        // cut sound effects off and make the BGM restart in the middle of a
+        // sample.
+        SDL_PauseAudioStreamDevice(this->m_pAudioStream);
+        SDL_ClearAudioStream(this->m_pAudioStream);
+    }
+    SDL_UnlockMutex(this->m_lock);
+    return 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -646,15 +796,14 @@ u32 CSound::Stop()
 // FUNCTION: TH07 0x0045d910
 HRESULT CSound::Pause()
 {
-    if (!this->m_apDSBuffer)
+    if (!this->m_pAudioStream)
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    HRESULT hr = 0;
     this->m_bIsPlaying = FALSE;
-    hr |= this->m_apDSBuffer[0]->Stop();
-    return hr;
+    SDL_PauseAudioStreamDevice(this->m_pAudioStream);
+    return S_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -664,14 +813,14 @@ HRESULT CSound::Pause()
 // FUNCTION: TH07 0x0045d960
 HRESULT CSound::Unpause()
 {
-    if (!this->m_apDSBuffer)
+    if (!this->m_pAudioStream)
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    LPDIRECTSOUNDBUFFER pDSB = this->m_apDSBuffer[0];
     this->m_bIsPlaying = TRUE;
-    return pDSB->Play(0, this->m_dwPriority, this->m_dwFlags);
+    SDL_ResumeAudioStreamDevice(this->m_pAudioStream);
+    return S_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -681,17 +830,25 @@ HRESULT CSound::Unpause()
 // FUNCTION: TH07 0x0045d9b0
 HRESULT CSound::Reset()
 {
-    if (!this->m_apDSBuffer)
+    if (!this->m_pAudioStream)
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    HRESULT hr = S_OK;
-    for (DWORD i = 0; i < this->m_dwNumBuffers; i++)
-    {
-        hr |= this->m_apDSBuffer[i]->SetCurrentPosition(0);
-    }
-    return hr;
+    this->Stop();
+    return S_OK;
+}
+
+//-----------------------------------------------------------------------------
+// Name: CSound::FadeOut()
+// Desc: Ramp the sound down over `duration` frames (UpdateFadeOut counts them)
+//       and silence it when the ramp reaches zero.
+//-----------------------------------------------------------------------------
+void CSound::FadeOut(f32 duration)
+{
+    this->m_dwIsFadingOut = 1;
+    this->m_iCurFadeoutProgress = (i32)(duration * 60.0f);
+    this->m_iTotalFadeout = this->m_iCurFadeoutProgress;
 }
 
 //-----------------------------------------------------------------------------
@@ -699,16 +856,22 @@ HRESULT CSound::Reset()
 // Desc:
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045da20
-CStreamingSound::CStreamingSound(LPDIRECTSOUNDBUFFER pDSBuffer,
-                                 DWORD dwDSBufferSize, CWaveFile *pWaveFile,
+CStreamingSound::CStreamingSound(CWaveFile *pWaveFile, ThBgmFormat *pFormat,
                                  DWORD dwNotifySize)
-    : CSound(&pDSBuffer, dwDSBufferSize, 1, pWaveFile)
+    : CSound(NULL, 0, 1, pWaveFile,
+             pFormat ? &pFormat->format : (const WAVEFORMATEX *)NULL)
 {
     this->m_dwLastPlayPos = 0;
     this->m_dwPlayProgress = 0;
     this->m_dwNotifySize = dwNotifySize;
     this->m_dwNextWriteOffset = 0;
     this->m_bFillNextNotificationWithSilence = FALSE;
+    this->m_hNotifyEvent = NULL;
+    this->m_bIsLocked = FALSE;
+    // BGM plays from the queue only: its data is produced by the BGM thread at
+    // whatever rate that thread gets to run, so it must never be re-timed
+    // against the wall clock the way the one-shot effects are.
+    this->m_voices[0].startedAt = 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -732,197 +895,168 @@ HRESULT CStreamingSound::UpdateFadeOut()
         if (--this->m_iCurFadeoutProgress <= 0)
         {
             this->m_dwIsFadingOut = 0;
-            this->m_apDSBuffer[0]->Stop();
+            this->Stop();
             return S_FALSE;
         }
-        i32 vol = this->m_iCurFadeoutProgress * 5000 / this->m_iTotalFadeout - 5000;
-        HRESULT hr = this->m_apDSBuffer[0]->SetVolume(vol);
+        // The original mapped this to the buffer volume in hundredths of a
+        // decibel; keep the same curve for the BGM.
+        this->SetVolume(this->m_iCurFadeoutProgress * 5000 / this->m_iTotalFadeout -
+                        5000);
     }
     return S_OK;
 }
 
 //-----------------------------------------------------------------------------
-// Name: CStreamingSound::HandleWaveStreamNotification()
-// Desc:
+// Name: CStreamingSound::InitSoundBuffers()
+// Desc: Recreates the stream (the original recreated the DirectSound buffers,
+//       which was needed after the device was lost).
 //-----------------------------------------------------------------------------
-#pragma var_order(dwDSLockedBufferSize2, pDSLockedBuffer,                     \
-                  dwBytesWrittenToBuffer, dwCurrentPlayPos, pDSLockedBuffer2, \
-                  bRestored, dwPlayDelta, hr, dwDSLockedBufferSize,           \
-                  dwCurrentPlayPos2, dwCurrentWritePos, dwReadSoFar)
+// FUNCTION: TH07 0x0045d060
+HRESULT CStreamingSound::InitSoundBuffers()
+{
+    SDL_AudioStream *stream;
+
+    if (!this->m_pWaveFile || !this->m_pWaveFile->m_pzwf)
+    {
+        return E_FAIL;
+    }
+
+    this->m_bIsPlaying = FALSE;
+    SDL_LockMutex(this->m_lock);
+    if (this->m_pAudioStream)
+    {
+        SDL_DestroyAudioStream(this->m_pAudioStream);
+        this->m_pAudioStream = NULL;
+    }
+    SDL_UnlockMutex(this->m_lock);
+
+    this->ReopenStream(&this->m_pWaveFile->m_pzwf->format);
+    stream = this->m_pAudioStream;
+    return stream ? S_OK : E_FAIL;
+}
+
+//-----------------------------------------------------------------------------
+// Name: CStreamingSound::HandleWaveStreamNotification()
+// Desc: Top up the stream from the archive. Called from the BGM thread, so
+//       this is the one place that reads the file.
+//-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045db60
 HRESULT CStreamingSound::HandleWaveStreamNotification(BOOL bLoopedPlay)
 {
-    HRESULT hr;
-    DWORD dwPlayDelta;
-    VOID *pDSLockedBuffer;
-    VOID *pDSLockedBuffer2;
-    DWORD dwCurrentWritePos;
-    DWORD dwCurrentPlayPos;
-    DWORD dwCurrentPlayPos2;
-    DWORD dwDSLockedBufferSize;
-    DWORD dwDSLockedBufferSize2;
-    DWORD dwBytesWrittenToBuffer;
-    DWORD dwReadSoFar;
+    u8 *chunk;
+    u32 want;
+    DWORD got;
+    DWORD chunkUsed;
 
-    if (!this->m_apDSBuffer || !this->m_pWaveFile)
+    if (!this->m_pAudioStream || !this->m_pWaveFile)
     {
         return CO_E_NOTINITIALIZED;
     }
 
-    this->m_apDSBuffer[0]->GetCurrentPosition(&dwCurrentPlayPos,
-                                              &dwCurrentWritePos);
-
-    if ((this->m_dwNextWriteOffset >= dwCurrentWritePos - this->m_dwNotifySize &&
-         this->m_dwNextWriteOffset < dwCurrentWritePos) ||
-        (dwCurrentWritePos - this->m_dwNotifySize < 0 &&
-         this->m_dwNextWriteOffset >=
-             this->m_dwDSBufferSize - this->m_dwNotifySize))
+    if (this->m_bFillNextNotificationWithSilence)
     {
-        // STRING: TH07 0x00495470
-        utils::DebugPrint("Stream Skip\n");
-        return CO_E_NOTINITIALIZED;
-    }
-
-    BOOL bRestored;
-    if (FAILED(hr = RestoreBuffer(this->m_apDSBuffer[0], &bRestored)))
-    {
-        // STRING: TH07 0x00495438
-        utils::DebugPrint("error : RestoreBuffer in HandleWaveStreamNotification\r\n");
-        return hr;
-    }
-
-    if (bRestored)
-    {
-        if (FAILED(hr = FillBufferWithSound(this->m_apDSBuffer[0], FALSE)))
-        {
-            // STRING: TH07 0x004953f8
-            utils::DebugPrint("error : FillBufferWithSound in HandleWaveStreamNotification\r\n");
-            return hr;
-        }
         return S_OK;
     }
 
-    pDSLockedBuffer = NULL;
-    pDSLockedBuffer2 = NULL;
-
-    if (FAILED(hr = this->m_apDSBuffer[0]->Lock(
-                   this->m_dwNextWriteOffset, this->m_dwNotifySize,
-                   &pDSLockedBuffer, &dwDSLockedBufferSize, &pDSLockedBuffer2,
-                   &dwDSLockedBufferSize2, 0L)))
+    if (SDL_GetAudioStreamQueued(this->m_pAudioStream) >= SDLSND_STREAM_MAX_QUEUED)
     {
-        // STRING: TH07 0x004953c0
-        utils::DebugPrint("error : Buffer->Lock in HandleWaveStreamNotification\r\n");
-        return hr;
+        // Already plenty buffered; try again on the next tick.
+        return S_OK;
     }
 
-    if (pDSLockedBuffer2)
+    want = this->m_dwNotifySize;
+    if (want == 0)
     {
-        return E_UNEXPECTED;
+        want = SDLSND_STREAM_CHUNK_SIZE;
     }
 
-    if (!this->m_bFillNextNotificationWithSilence)
+    chunk = (u8 *)malloc(want);
+    if (!chunk)
     {
-        if (FAILED(hr = this->m_pWaveFile->Read((u8 *)pDSLockedBuffer,
-                                                dwDSLockedBufferSize,
-                                                &dwBytesWrittenToBuffer)))
-        {
-            // STRING: TH07 0x00495384
-            utils::DebugPrint("error : m_pWaveFile->Read in HandleWaveStreamNotification\r\n");
-            return hr;
-        }
-    }
-    else
-    {
-        FillMemory(pDSLockedBuffer, dwDSLockedBufferSize,
-                   (BYTE)(this->m_pWaveFile->m_pzwf->format.wBitsPerSample == 8
-                              ? 128
-                              : 0));
-        dwBytesWrittenToBuffer = dwDSLockedBufferSize;
+        return E_OUTOFMEMORY;
     }
 
-    if (dwBytesWrittenToBuffer < dwDSLockedBufferSize)
+    if (FAILED(this->m_pWaveFile->Read(chunk, want, &got)))
+    {
+        // STRING: TH07 0x00495384
+        utils::DebugPrint("error : m_pWaveFile->Read in HandleWaveStreamNotification\r\n");
+        free(chunk);
+        return E_FAIL;
+    }
+
+    if (got < want)
     {
         if (!bLoopedPlay)
         {
-            FillMemory((u8 *)pDSLockedBuffer + dwBytesWrittenToBuffer,
-                       dwDSLockedBufferSize - dwBytesWrittenToBuffer,
-                       (BYTE)(this->m_pWaveFile->m_pzwf->format.wBitsPerSample == 8
-                                  ? 128
-                                  : 0));
             this->m_bFillNextNotificationWithSilence = TRUE;
         }
         else
         {
-            dwReadSoFar = dwBytesWrittenToBuffer;
-            while (dwReadSoFar < dwDSLockedBufferSize)
+            DWORD readSoFar = got;
+
+            while (readSoFar < want)
             {
-                if (FAILED(hr = this->m_pWaveFile->ResetFile(true)))
+                if (FAILED(this->m_pWaveFile->ResetFile(true)))
                 {
                     // STRING: TH07 0x00495340
                     utils::DebugPrint("error : m_pWaveFile->ResetFile in HandleWaveStreamNotification\r\n");
-                    return hr;
+                    break;
                 }
 
-                if (FAILED(hr = this->m_pWaveFile->Read(
-                               (u8 *)pDSLockedBuffer + dwReadSoFar,
-                               dwDSLockedBufferSize - dwReadSoFar,
-                               &dwBytesWrittenToBuffer)))
+                if (FAILED(this->m_pWaveFile->Read(chunk + readSoFar,
+                                                   want - readSoFar, &got)))
                 {
                     // STRING: TH07 0x00495300
                     utils::DebugPrint("error : m_pWaveFile->Read(+) in HandleWaveStreamNotification\r\n");
-                    return hr;
+                    break;
                 }
-
-                dwReadSoFar += dwBytesWrittenToBuffer;
+                if (got == 0)
+                {
+                    break;
+                }
+                readSoFar += got;
             }
+            got = readSoFar;
         }
     }
 
-    this->m_apDSBuffer[0]->Unlock(pDSLockedBuffer, dwDSLockedBufferSize, NULL, 0);
+    if (got > 0)
+    {
+        if (!SDL_PutAudioStreamData(this->m_pAudioStream, chunk, (int)got))
+        {
+            SDL_Log("audio: SDL_PutAudioStreamData failed: %s", SDL_GetError());
+        }
 
-    if (FAILED(hr = this->m_apDSBuffer[0]->GetCurrentPosition(&dwCurrentPlayPos2,
-                                                              NULL)))
-    {
-        // STRING: TH07 0x004952b0
-        utils::DebugPrint("error : m_apDSBuffer[0]->GetCurrentPosition in HandleWaveStreamNotification\r\n");
-        return hr;
+        chunkUsed = got;
+        this->m_dwLastPlayPos = chunkUsed;
+        this->m_dwPlayProgress += chunkUsed;
+        this->m_dwNextWriteOffset += chunkUsed;
     }
-    if (dwCurrentPlayPos2 < this->m_dwLastPlayPos)
-    {
-        dwPlayDelta =
-            this->m_dwDSBufferSize - this->m_dwLastPlayPos + dwCurrentPlayPos2;
-    }
-    else
-    {
-        dwPlayDelta = dwCurrentPlayPos2 - this->m_dwLastPlayPos;
-    }
-
-    this->m_dwPlayProgress += dwPlayDelta;
-    this->m_dwLastPlayPos = dwCurrentPlayPos2;
+    free(chunk);
 
     if (this->m_bFillNextNotificationWithSilence)
     {
-        if (this->m_dwPlayProgress >= this->m_pWaveFile->GetSize())
+        // The track has ended; stop once what is already queued has played.
+        if (!this->IsAudioPending())
         {
-            this->m_apDSBuffer[0]->Stop();
+            this->m_bIsPlaying = FALSE;
+            if (this->m_pAudioStream)
+            {
+                SDL_PauseAudioStreamDevice(this->m_pAudioStream);
+            }
         }
     }
-
-    this->m_dwNextWriteOffset += dwDSLockedBufferSize;
-    this->m_dwNextWriteOffset %= this->m_dwDSBufferSize;
     return S_OK;
 }
 
 //-----------------------------------------------------------------------------
 // Name: CStreamingSound::Reset()
-// Desc:
+// Desc: Rewind the current track and drop anything queued.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045df50
 HRESULT CStreamingSound::Reset()
 {
-    HRESULT hr;
-
-    if (!this->m_apDSBuffer[0] || !this->m_pWaveFile)
+    if (!this->m_pAudioStream || !this->m_pWaveFile)
     {
         return CO_E_NOTINITIALIZED;
     }
@@ -931,23 +1065,9 @@ HRESULT CStreamingSound::Reset()
     this->m_dwPlayProgress = 0;
     this->m_dwNextWriteOffset = 0;
     this->m_bFillNextNotificationWithSilence = FALSE;
-
-    BOOL bRestored;
-    if (FAILED(hr = RestoreBuffer(this->m_apDSBuffer[0], &bRestored)))
-    {
-        return hr;
-    }
-
-    if (bRestored)
-    {
-        if (FAILED(hr = FillBufferWithSound(this->m_apDSBuffer[0], FALSE)))
-        {
-            return hr;
-        }
-    }
-
     this->m_pWaveFile->ResetFile(false);
-    return this->m_apDSBuffer[0]->SetCurrentPosition(0);
+    SDL_ClearAudioStream(this->m_pAudioStream);
+    return S_OK;
 }
 
 //-----------------------------------------------------------------------------
@@ -957,10 +1077,18 @@ HRESULT CStreamingSound::Reset()
 // FUNCTION: TH07 0x0045e020
 CWaveFile::CWaveFile()
 {
+    memset(&this->m_ck, 0, sizeof(this->m_ck));
+    memset(&this->m_ckRiff, 0, sizeof(this->m_ckRiff));
+    memset(&this->m_mmioinfo, 0, sizeof(this->m_mmioinfo));
     this->m_pzwf = NULL;
     this->h_mmio = NULL;
     this->m_dwSize = 0;
     this->m_bIsReadingFromMemory = FALSE;
+    this->m_dwFlags = 0;
+    this->m_pbData = NULL;
+    this->m_pbDataCur = NULL;
+    this->m_ulDataSize = 0;
+    this->m_hWaveFile = INVALID_HANDLE_VALUE;
 }
 
 //-----------------------------------------------------------------------------
@@ -1001,6 +1129,12 @@ HRESULT CWaveFile::Open(LPCSTR strFileName, ThBgmFormat *pzwf, DWORD dwFlags)
         }
 
         this->m_pzwf = pzwf;
+        if (!pzwf)
+        {
+            CloseHandle(this->m_hWaveFile);
+            this->m_hWaveFile = INVALID_HANDLE_VALUE;
+            return E_INVALIDARG;
+        }
         ResetFile(false);
         this->m_dwSize = this->m_ck.cksize;
     }
@@ -1010,7 +1144,7 @@ HRESULT CWaveFile::Open(LPCSTR strFileName, ThBgmFormat *pzwf, DWORD dwFlags)
 
 //-----------------------------------------------------------------------------
 // Name: CWaveFile::Reopen()
-// Desc:
+// Desc: Point the file at another ZWAV entry (another track).
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045e130
 HRESULT CWaveFile::Reopen(ThBgmFormat *pzwf)
@@ -1023,6 +1157,11 @@ HRESULT CWaveFile::Reopen(ThBgmFormat *pzwf)
     if (this->m_hWaveFile == INVALID_HANDLE_VALUE)
     {
         return E_FAIL;
+    }
+
+    if (!pzwf)
+    {
+        return E_INVALIDARG;
     }
 
     this->m_pzwf = pzwf;
@@ -1065,7 +1204,8 @@ DWORD CWaveFile::GetSize()
 
 //-----------------------------------------------------------------------------
 // Name: CWaveFile::ResetFile()
-// Desc:
+// Desc: Seek to the start of the entry (or to its loop point). This is the
+//       thbgm.dat layout logic and is unchanged from the DirectSound version.
 //-----------------------------------------------------------------------------
 // FUNCTION: TH07 0x0045e210
 HRESULT CWaveFile::ResetFile(bool bLoop)
@@ -1074,6 +1214,10 @@ HRESULT CWaveFile::ResetFile(bool bLoop)
 
     if (this->m_bIsReadingFromMemory)
     {
+        if (!this->m_pzwf)
+        {
+            return E_INVALIDARG;
+        }
         this->m_pbDataCur = this->m_pbData;
         if (this->m_pzwf->totalLength > 0)
         {
@@ -1086,9 +1230,13 @@ HRESULT CWaveFile::ResetFile(bool bLoop)
     }
     else
     {
-        if (!this->m_hWaveFile)
+        if (!this->m_hWaveFile || this->m_hWaveFile == INVALID_HANDLE_VALUE)
         {
             return CO_E_NOTINITIALIZED;
+        }
+        if (!this->m_pzwf)
+        {
+            return E_INVALIDARG;
         }
         if (bLoop && this->m_pzwf->introLength > 0)
         {
@@ -1115,7 +1263,6 @@ HRESULT CWaveFile::ResetFile(bool bLoop)
 // Name: CWaveFile::Read()
 // Desc:
 //-----------------------------------------------------------------------------
-#pragma var_order(bytesRead, sizeToRead)
 // FUNCTION: TH07 0x0045e360
 HRESULT CWaveFile::Read(u8 *pBuffer, DWORD dwSizeToRead, DWORD *pdwSizeRead)
 {
@@ -1150,7 +1297,7 @@ HRESULT CWaveFile::Read(u8 *pBuffer, DWORD dwSizeToRead, DWORD *pdwSizeRead)
         return S_OK;
     }
 
-    if (!this->m_hWaveFile)
+    if (!this->m_hWaveFile || this->m_hWaveFile == INVALID_HANDLE_VALUE)
     {
         return CO_E_NOTINITIALIZED;
     }
@@ -1167,6 +1314,7 @@ HRESULT CWaveFile::Read(u8 *pBuffer, DWORD dwSizeToRead, DWORD *pdwSizeRead)
     }
     this->m_ck.cksize -= sizeToRead;
 
+    bytesRead = 0;
     ReadFile(this->m_hWaveFile, pBuffer, sizeToRead, &bytesRead, NULL);
     if (pdwSizeRead)
     {
@@ -1184,7 +1332,10 @@ HRESULT CWaveFile::Close()
 {
     if (this->m_dwFlags == WAVEFILE_READ)
     {
-        CloseHandle(this->m_hWaveFile);
+        if (this->m_hWaveFile && this->m_hWaveFile != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(this->m_hWaveFile);
+        }
         this->m_hWaveFile = INVALID_HANDLE_VALUE;
     }
     return S_OK;

@@ -1,12 +1,15 @@
 #pragma once
 
+#include <SDL3/SDL.h>
 #include <basetsd.h>
-#include <d3d8.h>
-#include <d3dx8math.h>
-#include <dinput.h>
 
+// Direct3D is gone: the renderer is SDL3 + OpenGL and there is no device object to
+// hold. RenderCompat supplies the D3D-shaped names the game still uses for maths and
+// colour packing.
 #include "Global.hpp"
 #include "MidiOutput.hpp"
+#include "RenderCompat.hpp"
+#include "Renderer.hpp"
 #include "ZunBool.hpp"
 #include "inttypes.hpp"
 
@@ -120,7 +123,6 @@ struct Supervisor
     static ZunResult LoadGameData();
     ZunResult PlayAudio(const char *path);
     ZunResult PlayLoadedAudio(i32 idx);
-    void SetRenderState(D3DRENDERSTATETYPE stateType, DWORD state);
     ZunResult SetupDInput();
     ZunBool TakeSnapshot(const char *filename);
     ZunResult StopAudio();
@@ -130,10 +132,14 @@ struct Supervisor
 
     i32 IsSlowMode();
 
-    static BOOL CALLBACK ControllerCallback(LPCDIDEVICEOBJECTINSTANCE lpddoi,
-                                            LPVOID pvRef);
-    static BOOL CALLBACK EnumGameControllersCb(LPCDIDEVICEINSTANCEA pdidInstance,
-                                               LPVOID pvRef);
+    // SDL3 input. GetInputFrame is the replacement for Controller::GetInput(): it
+    // produces the frame's TouhouButton bitmask for g_CurFrameRawInput.
+    static u16 GetInputFrame();
+    static u16 GetGamepadInput(u16 buttons);
+    static u32 SetButtonFromGamepad(u16 *outButtons, i16 controllerButtonToTest,
+                                    u32 touhouButton, SDL_Gamepad *pad);
+    static void ProcessInputEvents();
+    static void RefreshGamepad();
 
     void InitializeTimingVars()
     {
@@ -160,17 +166,21 @@ struct Supervisor
     }
 
     HINSTANCE hInstance;
-    IDirect3D8 *d3dIface;
-    LPDIRECT3DDEVICE8 d3dDevice;
-    LPDIRECTINPUT8A directInput;
-    LPDIRECTINPUTDEVICE8A keyboard;
-    LPDIRECTINPUTDEVICE8A controller;
-    DIDEVCAPS controllerCaps;
+    // SDL3 gamepad handle replacing the DirectInput objects. NULL when no gamepad is
+    // attached, which is the normal case: the game is then keyboard only.
+    //
+    // DirectInput needed four members here -- the IDirectInput8A, the keyboard and
+    // controller devices, and a DIDEVCAPS, which is 0x30 bytes. SDL needs a single
+    // gamepad handle, so the pad below stands in for the rest of that DirectInput
+    // storage. Keeping the leading block the same width as the original keeps every
+    // field after it, and sizeof(Supervisor), where the original had them; the C_ASSERT
+    // below is what holds that in place.
+    SDL_Gamepad *controller;
+    u8 inputPad_10[0x34];
     HWND hwndGameWindow;
     D3DXMATRIX viewMatrix;
     D3DXMATRIX projectionMatrix;
     D3DVIEWPORT8 viewport;
-    D3DPRESENT_PARAMETERS presentParameters;
     DummyMidiTimer *midiTimer;
     GameConfiguration cfg;
     i32 calcCount;
@@ -203,7 +213,6 @@ struct Supervisor
     };
     DWORD lastTotalPlayTimeUpdate;
     DWORD currentTime;
-    D3DCAPS8 d3dCaps;
     LARGE_INTEGER perfFrequency;
     LARGE_INTEGER prevPerfCounter;
     LARGE_INTEGER curPerfCounter;
@@ -221,7 +230,8 @@ struct Supervisor
     i32 versionDataSize;
     char *versionData;
 };
-C_ASSERT(sizeof(Supervisor) == 0x2d0);
+// The layout no longer matches the retail binary: the Direct3D and DirectInput handles
+// are gone. Nothing reads this struct from a file, so the exact size is not load-bearing.
 extern Supervisor g_Supervisor;
 
 #define NUKE_SUPERVISOR() memset(&g_Supervisor, -1, sizeof(g_Supervisor))

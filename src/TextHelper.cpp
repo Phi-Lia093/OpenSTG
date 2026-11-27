@@ -1,7 +1,9 @@
 #include "TextHelper.hpp"
 
-#include <d3d8.h>
-#include <d3dx8tex.h>
+#include "RenderCompat.hpp"
+#include "Renderer.hpp"
+
+#include <stdio.h>
 #include <wingdi.h>
 
 #include "Supervisor.hpp"
@@ -12,7 +14,7 @@
 // GLOBAL: TH07 0x0049ed98
 FormatInfo g_FormatInfoArray[7] = {
     {
-        D3DFMT_X8R8G8B8,
+        1,
         0x20,
         0,
         0x00FF0000,
@@ -20,7 +22,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x000000FF,
     },
     {
-        D3DFMT_A8R8G8B8,
+        1,
         0x20,
         0xFF000000,
         0x00FF0000,
@@ -28,7 +30,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x000000FF,
     },
     {
-        D3DFMT_X1R5G5B5,
+        2,
         0x10,
         0,
         0x00007C00,
@@ -36,7 +38,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x0000001F,
     },
     {
-        D3DFMT_R5G6B5,
+        3,
         0x10,
         0,
         0x0000F800,
@@ -44,7 +46,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x0000001F,
     },
     {
-        D3DFMT_A1R5G5B5,
+        2,
         0x10,
         0x00008000,
         0x00007C00,
@@ -52,7 +54,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x0000001F,
     },
     {
-        D3DFMT_A4R4G4B4,
+        5,
         0x10,
         0x0000F000,
         0x00000F00,
@@ -60,7 +62,7 @@ FormatInfo g_FormatInfoArray[7] = {
         0x0000000F,
     },
     {
-        (D3DFORMAT)-1,
+        (u32)-1,
         0x0,
         0,
         0,
@@ -70,12 +72,12 @@ FormatInfo g_FormatInfoArray[7] = {
 };
 
 // GLOBAL: TH07 0x0049fe28
-IDirect3DSurface8 *g_TextBufferSurface;
+SurfaceHandle *g_TextBufferSurface;
 
 // FUNCTION: TH07 0x00431a0f
 TextHelper::TextHelper()
 {
-    this->format = (D3DFORMAT)-1;
+    this->format = (u32)-1;
     this->width = 0;
     this->height = 0;
     this->hdc = NULL;
@@ -98,7 +100,7 @@ bool TextHelper::ReleaseBuffer()
         SelectObject((HDC)this->hdc, this->gdiobj);
         DeleteDC((HDC)this->hdc);
         DeleteObject(this->gdiobj2);
-        this->format = (D3DFORMAT)-1;
+        this->format = (u32)-1;
         this->width = 0;
         this->height = 0;
         this->hdc = NULL;
@@ -113,21 +115,21 @@ bool TextHelper::ReleaseBuffer()
 
 // FUNCTION: TH07 0x00431ace
 bool TextHelper::AllocateBufferWithFallback(i32 width, i32 height,
-                                            D3DFORMAT format)
+                                            u32 format)
 {
     if (TryAllocateBuffer(width, height, format))
     {
         return true;
     }
 
-    if (format == D3DFMT_A1R5G5B5 || format == D3DFMT_A4R4G4B4)
+    if (format == 2 || format == 5)
     {
-        return TryAllocateBuffer(width, height, D3DFMT_A8R8G8B8);
+        return TryAllocateBuffer(width, height, 1);
     }
 
-    if (format == D3DFMT_R5G6B5)
+    if (format == 3)
     {
-        return TryAllocateBuffer(width, height, D3DFMT_X8R8G8B8);
+        return TryAllocateBuffer(width, height, 1);
     }
 
     return false;
@@ -143,7 +145,7 @@ C_ASSERT(sizeof(ThBitmapInfo) == 0x6c);
 #pragma var_order(imageWidthInBytes, deviceContext, originalBitmapObj, \
                   bitmapInfo, formatInfo, bitmapObj, bitmapData)
 // FUNCTION: TH07 0x00431b2d
-bool TextHelper::TryAllocateBuffer(i32 width, i32 height, D3DFORMAT format)
+bool TextHelper::TryAllocateBuffer(i32 width, i32 height, u32 format)
 {
     i32 imageWidthInBytes;
     HDC deviceContext;
@@ -167,7 +169,7 @@ bool TextHelper::TryAllocateBuffer(i32 width, i32 height, D3DFORMAT format)
     bitmapInfo.bmiHeader.biPlanes = 1;
     bitmapInfo.bmiHeader.biBitCount = (WORD)formatInfo->bitCount;
     bitmapInfo.bmiHeader.biSizeImage = height * imageWidthInBytes;
-    if (format != D3DFMT_X1R5G5B5 && format != D3DFMT_X8R8G8B8)
+    if (format != 2 && format != 1)
     {
         bitmapInfo.bmiHeader.biCompression = 3;
         ((u32 *)bitmapInfo.bmiColors)[0] = formatInfo->redMask;
@@ -197,7 +199,7 @@ bool TextHelper::TryAllocateBuffer(i32 width, i32 height, D3DFORMAT format)
 }
 
 // FUNCTION: TH07 0x00431cec
-FormatInfo *TextHelper::GetFormatInfo(D3DFORMAT format)
+FormatInfo *TextHelper::GetFormatInfo(u32 format)
 {
     i32 i;
     for (i = 0; g_FormatInfoArray[i].format != -1 &&
@@ -238,13 +240,13 @@ bool TextHelper::InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight,
     bufferRegion = &bufferStart[y * spriteWidth * 2];
     switch (this->format)
     {
-    case D3DFMT_A8R8G8B8:
+    case 1:
         for (i = 3; i < doubleArea; i += 4)
         {
             bufferRegion[i] ^= 255;
         }
         break;
-    case D3DFMT_A1R5G5B5:
+    case 2:
         for (bufferCursor = (A1R5G5B5 *)bufferRegion, i = 0; i < doubleArea;
              i += 2, bufferCursor++)
         {
@@ -302,7 +304,7 @@ bool TextHelper::InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight,
             }
         }
         break;
-    case D3DFMT_A4R4G4B4:
+    case 5:
         for (i = 1; i < doubleArea; i += 2)
         {
             bufferRegion[i] ^= 240;
@@ -314,48 +316,69 @@ bool TextHelper::InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight,
     return true;
 }
 
-#pragma var_order(dstBuf, dstWidthBytes, rectToLock, curHeight, srcWidthBytes, \
-                  outSurfaceDesc, srcBuf, lockedRect)
 // FUNCTION: TH07 0x00432164
-bool TextHelper::CopyTextToSurface(IDirect3DSurface8 *surface)
+bool TextHelper::CopyTextToSurface(SurfaceHandle *surface)
 {
-    D3DLOCKED_RECT lockedRect;
     u8 *srcBuf;
-    D3DSURFACE_DESC surfaceDesc;
-    size_t srcWidthBytes;
     i32 i;
-    RECT rectToLock;
+    i32 srcWidthBytes;
     i32 dstWidthBytes;
     u8 *dstBuf;
+    i32 copyWidth;
 
     if (!(u8)(u32)(this->gdiobj2 != NULL))
     {
         return false;
     }
-
-    surface->GetDesc(&surfaceDesc);
-    rectToLock.left = 0;
-    rectToLock.top = 0;
-    rectToLock.right = this->GetWidth();
-    rectToLock.bottom = this->GetHeight();
-    if (surface->LockRect(&lockedRect, &rectToLock, 0))
+    if (!surface || !surface->surface || !surface->surface->pixels || !this->buffer)
     {
         return false;
     }
 
-    dstWidthBytes = lockedRect.Pitch;
+    // The glyphs are drawn with GDI into a 32-bit buffer whose coverage ends up in the
+    // red channel; that coverage becomes the alpha of the sprite, and the requested
+    // colour is applied uniformly. Doing it this way avoids the original's alpha-bit
+    // fiddling entirely, which relied on an exact A1R5G5B5 bit layout.
     srcWidthBytes = this->imageWidthInBytes;
     srcBuf = this->buffer;
-    dstBuf = (u8 *)lockedRect.pBits;
-    if (surfaceDesc.Format == this->GetFormat())
+    dstWidthBytes = surface->width * 4;
+    dstBuf = surface->surface->pixels;
+
+    copyWidth = this->GetWidth();
+    if (copyWidth > surface->width)
     {
-        for (i = 0; i < this->GetHeight(); i++)
+        copyWidth = surface->width;
+    }
+
+    for (i = 0; i < this->GetHeight() && i < surface->height; i++)
+    {
+        ConvertToRGBA8(srcBuf, dstBuf, (u32)copyWidth,
+                       (TextureFormat)this->GetFormat(), 0, false);
+        srcBuf += srcWidthBytes;
+        dstBuf += dstWidthBytes;
+    }
+
+    // GDI never writes an alpha channel, so a 32-bit DIB comes back fully transparent and
+    // the glyphs disappear. Their coverage is in the colour channels instead: take the
+    // brightest channel as opacity.
+    if (this->GetFormat() == 1)
+    {
+        u8 *dst = surface->surface->pixels;
+        for (i32 row = 0; row < this->GetHeight() && row < surface->height; row++)
         {
-            memcpy(dstBuf, srcBuf, srcWidthBytes);
-            srcBuf += srcWidthBytes;
-            dstBuf += dstWidthBytes;
+            for (i32 col = 0; col < copyWidth; col++)
+            {
+                u8 *px = &dst[((size_t)row * surface->width + col) * 4];
+                u8 coverage = px[0] > px[1] ? px[0] : px[1];
+                if (px[2] > coverage)
+                {
+                    coverage = px[2];
+                }
+                px[3] = coverage;
+            }
         }
     }
+
     surface->UnlockRect();
     return true;
 }
@@ -363,83 +386,107 @@ bool TextHelper::CopyTextToSurface(IDirect3DSurface8 *surface)
 // FUNCTION: TH07 0x0043225b
 void TextHelper::CreateTextBuffer()
 {
-    g_Supervisor.d3dDevice->CreateImageSurface(1024, 64, D3DFMT_A1R5G5B5,
-                                               &g_TextBufferSurface);
+    // A 1024x64 scratch surface the GDI text is composed into. Format 1 is 32-bit RGBA,
+    // which GDI writes as BGRA; reading the coverage from one channel there is far more
+    // dependable than interpreting 16-bit alpha bits.
+    g_TextBufferSurface = SurfaceHandleCreate(1024, 64, 1);
 }
 
 // FUNCTION: TH07 0x0043227e
 void TextHelper::ReleaseTextBuffer()
 {
-    SAFE_RELEASE(g_TextBufferSurface);
+    if (g_TextBufferSurface)
+    {
+        g_TextBufferSurface->Release();
+        g_TextBufferSurface = NULL;
+    }
 }
 
-#pragma var_order(hdc, hFont, textSurfaceDesc, h, textHelper, srcRect, \
-                  dstRect, dstSurface)
 // FUNCTION: TH07 0x004322a3
 void TextHelper::RenderTextToTextureBold(i32 xPos, i32 yPos, i32 spriteWidth,
                                          i32 spriteHeight, i32 fontHeight,
                                          i32 fontWidth, D3DCOLOR textColor,
                                          u32 outlineType, char *string,
-                                         IDirect3DTexture8 *outTexture)
+                                         TextureHandle *outTexture)
 {
-    IDirect3DSurface8 *dstSurface;
-    RECT dstRect;
-    RECT srcRect;
-    HGDIOBJ h;
-    D3DSURFACE_DESC textSurfaceDesc;
-    HFONT hFont;
-    HDC hdc;
+    RenderTexture *dst;
+    FontFace *face;
+    i32 textWidth;
+    i32 drawX;
+    i32 drawY;
 
-    hFont =
-        CreateFontA(fontHeight * 2 - 2, 0, 0, 0, FW_BOLD, false, false, false,
-                    SHIFTJIS_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                    ANTIALIASED_QUALITY, FF_ROMAN | FIXED_PITCH, TH_FONT_MS_GOTHIC);
-    TextHelper textHelper;
-    g_TextBufferSurface->GetDesc(&textSurfaceDesc);
-    textHelper.AllocateBufferWithFallback(
-        textSurfaceDesc.Width, textSurfaceDesc.Height, textSurfaceDesc.Format);
-    hdc = textHelper.hdc;
-    h = SelectObject(hdc, hFont);
-    textHelper.InvertAlpha(0, 0, spriteWidth << 1, fontHeight * 2 + 6, 0);
-    SetBkMode(hdc, 1);
-    if (outlineType != 0xffffffff)
+    if (!outTexture || !outTexture->texture || !string)
     {
-        SetTextColor(hdc, 0);
-        TextOutA(hdc, xPos * 2 + 4, 2, string, strlen(string));
-        TextOutA(hdc, xPos << 1, 2, string, strlen(string));
-        TextOutA(hdc, xPos * 2 + 2, 0, string, strlen(string));
-        TextOutA(hdc, xPos * 2 + 2, 4, string, strlen(string));
+        return;
     }
-    else
+
+    face = FontGetDefault();
+    if (!face)
     {
-        SetTextColor(hdc, 0);
-        TextOutA(hdc, xPos * 2 + 3, 2, string, strlen(string));
-        TextOutA(hdc, xPos * 2 + 1, 2, string, strlen(string));
-        TextOutA(hdc, xPos * 2 + 2, 1, string, strlen(string));
-        TextOutA(hdc, xPos * 2 + 2, 3, string, strlen(string));
+        return;
     }
-    SetTextColor(hdc, textColor);
-    TextOutA(hdc, xPos * 2 + 2, 2, string, strlen(string));
-    SelectObject(hdc, h);
-    textHelper.InvertAlpha(0, 0, spriteWidth << 1, fontHeight * 2 + 6,
-                           (u32)(outlineType == 0xffffffff));
-    textHelper.CopyTextToSurface(g_TextBufferSurface);
-    SelectObject(hdc, h);
-    DeleteObject(hFont);
-    dstRect.left = 0;
-    dstRect.top = yPos;
-    dstRect.right = spriteWidth;
-    dstRect.bottom = yPos + fontWidth;
-    srcRect.left = 0;
-    srcRect.top = 0;
-    srcRect.right = spriteWidth << 1;
-    srcRect.bottom = fontHeight << 1;
-    if (srcRect.right > 1024)
+
+    if (fontHeight <= 0)
     {
-        srcRect.right = 1024;
+        fontHeight = 15;
     }
-    outTexture->GetSurfaceLevel(0, &dstSurface);
-    D3DXLoadSurfaceFromSurface(dstSurface, 0, &dstRect, g_TextBufferSurface, 0,
-                               &srcRect, 4, 0);
-    SAFE_RELEASE(dstSurface);
+    if (fontWidth <= 0)
+    {
+        fontWidth = 15;
+    }
+
+    dst = outTexture->texture;
+    if (!dst->pixels)
+    {
+        dst->pixels = (u8 *)malloc((size_t)dst->width * dst->height * 4);
+        if (!dst->pixels)
+        {
+            return;
+        }
+        memset(dst->pixels, 0, (size_t)dst->width * dst->height * 4);
+    }
+
+    // Clear only the band this sprite occupies. Several sprites share one texture (every
+    // menu description does), so clearing the whole thing would erase the lines drawn for
+    // the sprites before this one.
+    {
+        i32 clearTop = yPos;
+        i32 clearBottom = yPos + fontHeight + 2;
+        if (clearTop < 0)
+        {
+            clearTop = 0;
+        }
+        if (clearBottom > dst->height)
+        {
+            clearBottom = dst->height;
+        }
+        if (clearBottom > clearTop)
+        {
+            memset(&dst->pixels[(size_t)clearTop * dst->width * 4], 0,
+                   (size_t)(clearBottom - clearTop) * dst->width * 4);
+        }
+    }
+
+    // Centre the string inside the sprite. The glyph height is the line height the caller
+    // asked for; stb_truetype scales by character height, which is what fontHeight names.
+    textWidth = FontMeasureText(face, string, (f32)fontHeight);
+    drawX = (spriteWidth - textWidth) / 2;
+    if (drawX < 0)
+    {
+        drawX = 0;
+    }
+    // stb_truetype positions glyphs relative to the baseline, and a glyph extends upwards
+    // from it. Placing the baseline at the sprite's top would draw the whole character
+    // above the visible area, so the baseline is pushed down by the ascent.
+    drawY = yPos + FontAscent(face, (f32)fontHeight);
+
+    // outlineType comes in as an RGB colour; 0xffffffff means the text has no outline.
+    // Painting the outline in that colour and the glyph in textColor reproduces the
+    // original's bordered look.
+    FontDrawText(face, dst->pixels, dst->width, dst->height, drawX, drawY, string,
+                 (f32)fontHeight, textColor, outlineType,
+                 outlineType != 0xffffffff);
+
+    RenderTextureUpload(dst, dst->pixels);
+
 }

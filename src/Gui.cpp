@@ -1150,31 +1150,21 @@ ZunResult GuiImpl::DrawDialogue()
     g_AnmManager->DrawNoRotation(&this->msg.portraits[1]);
     this->msg.portraits[1].pos = oldPos;
     g_AnmManager->Flush();
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    // The box behind the dialogue is a solid translucent fill. Drawing it untextured
+    // is the SELECTARG1 diffuse setup the original configured here.
     if (!g_Supervisor.cfg.disableZBuffer)
     {
-        g_Supervisor.SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        RendererSetZWrite(false);
     }
-    g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
-    g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, dialogueBg,
-                                            sizeof(VertexDiffuseXyzrhw));
+    RendererSetBlend(RENDER_BLEND_ALPHA);
+    RendererDrawColoredQuad(dialogueBg[0].pos.x, dialogueBg[0].pos.y,
+                            dialogueBg[1].pos.x, dialogueBg[2].pos.y,
+                            dialogueBg[0].diffuse.color, dialogueBg[1].diffuse.color,
+                            dialogueBg[2].diffuse.color, dialogueBg[3].diffuse.color);
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
-    if (!g_Supervisor.cfg.disableTextureBlend)
-    {
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    }
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     g_AnmManager->DrawNoRotation(&this->msg.dialogueLines[0]);
     g_AnmManager->DrawNoRotation(&this->msg.dialogueLines[1]);
     g_AnmManager->DrawNoRotation(&this->msg.introLines[0]);
@@ -1452,7 +1442,7 @@ void Gui::DrawGameScene()
     g_Supervisor.viewport.Y = 0;
     g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
     g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-    g_Supervisor.d3dDevice->SetViewport(&g_Supervisor.viewport);
+    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
     vm = &this->impl->vms0[12];
     if (g_Supervisor.cfg.redrawEveryFrame ||
         vm->currentInstruction ||
@@ -1637,31 +1627,21 @@ void Gui::DrawGameScene()
             powerBarVerts[1].diffuse.color = powerBarVerts[3].diffuse.color = 0x80e0e0ff;
 
             powerBarVerts[0].w = powerBarVerts[1].w = powerBarVerts[2].w = powerBarVerts[3].w = 1.0f;
-            if (!g_Supervisor.cfg.disableTextureBlend)
-            {
-                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-            }
-            g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-            g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
             if (!g_Supervisor.cfg.disableZBuffer)
             {
-                g_Supervisor.SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+                RendererSetZWrite(false);
             }
-            g_Supervisor.d3dDevice->SetVertexShader(D3DFVF_DIFFUSE | D3DFVF_XYZRHW);
-            g_Supervisor.d3dDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, &powerBarVerts,
-                                                    sizeof(VertexDiffuseXyzrhw));
+            RendererSetBlend(RENDER_BLEND_ALPHA);
+            RendererDrawColoredQuad(powerBarVerts[0].pos.x, powerBarVerts[0].pos.y,
+                                    powerBarVerts[1].pos.x, powerBarVerts[2].pos.y,
+                                    powerBarVerts[0].diffuse.color,
+                                    powerBarVerts[1].diffuse.color,
+                                    powerBarVerts[2].diffuse.color,
+                                    powerBarVerts[3].diffuse.color);
             g_AnmManager->SetVertexShader(255);
             g_AnmManager->SetColorOp(255);
             g_AnmManager->SetBlendMode(255);
             g_AnmManager->SetZWriteDisable(255);
-            if (!g_Supervisor.cfg.disableTextureBlend)
-            {
-                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-                g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-            }
-            g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-            g_Supervisor.d3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
         }
         if (g_GameManager.GetPower() < 128)
         {

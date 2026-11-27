@@ -7,7 +7,7 @@
 
 | # | 目标 | 落地方式 |
 |---|---|---|
-| 1 | 现代渲染、跨平台 | SDL3 + OpenGL 3.3 替换 D3D8 |
+| 1 | 现代渲染、跨平台 | SDL3 + OpenGL 3.3 替换 D3D8（**已完成**） |
 | 2 | 摒弃 anm/ecl/std/sht/msg/dat 二进制格式 | 文件夹 + PNG + MID/WAV + 文本配置 |
 | 3 | 二进制配置全部文本化 | 原版 config 结构体 → 可读配置文件 |
 | 4 | anm/ecl VM 用现代脚本替代 | ANM → 自定义 DSL；ECL → 语义化 Lua |

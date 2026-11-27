@@ -1,6 +1,6 @@
 #pragma once
 
-#include <dsound.h>
+#include <SDL3/SDL.h>
 
 #include "ZunResult.hpp"
 #include "dsutil.hpp"
@@ -62,6 +62,10 @@ C_ASSERT(sizeof(SoundPlayerCommand) == 0x10c);
 
 #define MAX_SOUND_COMMANDS 31
 
+// The audio front end the game talks to. This struct used to mirror the
+// original's memory layout down to the last DirectSound pointer; with the
+// playback layer moved to SDL3 the layout no longer matters, only the member
+// names (Supervisor.cpp still sets bgmArchivePath before PlayLoadedAudio).
 struct SoundPlayer
 {
     SoundPlayer()
@@ -74,6 +78,7 @@ struct SoundPlayer
     }
 
     static DWORD __stdcall BackgroundMusicPlayerThread(LPVOID lpThreadParameter);
+    void ApplySoundVolume(i32 idx);
     i32 GetFmtIndexByName(const char *name);
     static WAVEFORMATEX *GetWavFormatData(u8 *soundData, const char *formatString,
                                           i32 *formatSize, u32 fileSizeExcludingFormat);
@@ -99,12 +104,17 @@ struct SoundPlayer
         }
     }
 
-    LPDIRECTSOUND8 directSoundHdl;
-    i32 unused_4;
-    LPDIRECTSOUNDBUFFER soundBuffers[128];
-    LPDIRECTSOUNDBUFFER duplicateSoundBuffers[128];
+    // One CSound per entry of g_SFXList (see SoundPlayer.cpp), each holding the
+    // decoded WAV and its own SDL audio stream.
+    CSound *sounds[128];
+    // Per game-sound settings from SOUND_BUFFER_IDX_VOL: which g_SFXList entry
+    // to play and how loud. Replaces the array of pre-configured DirectSound
+    // duplicate buffers; the volume is applied to the CSound instead.
+    SoundBufferIdxVolume *duplicateSoundBuffers[128];
     i32 unusedSoundVolRelated[128];
-    LPDIRECTSOUNDBUFFER initSoundBuffer;
+    // The BGM stream runs on its own thread, exactly like the original's
+    // DirectSound notification thread; the event releases it once per tick.
+    HANDLE backgroundMusicUpdateEvent;
     HWND gameWindow;
     CSoundManager *manager;
     DWORD backgroundMusicThreadId; // ZUN name: m_dwNotifyThreadID
@@ -121,9 +131,7 @@ struct SoundPlayer
     char bgmFileNames[16][256];
     char bgmArchivePath[256];
     CStreamingSound *backgroundMusic;
-    HANDLE backgroundMusicUpdateEvent;
     i32 unused_39c4;
     i32 bgmSeekOffset;
 };
-C_ASSERT(sizeof(SoundPlayer) == 0x39cc);
 extern SoundPlayer g_SoundPlayer;

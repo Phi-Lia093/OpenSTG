@@ -2,7 +2,7 @@
 
 #include "inttypes.hpp"
 
-#include <d3d8.h>
+#include "RenderCompat.hpp"
 #include <stddef.h>
 
 namespace th07

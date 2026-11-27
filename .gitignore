@@ -18,6 +18,9 @@ resources/custom.exe
 *.gpr
 *.lock
 *.rep
+*.swp
+*.swo
+*~
 .venv*
 compile_commands.json
 reccmp-user.yml

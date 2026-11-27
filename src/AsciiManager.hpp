@@ -1,10 +1,8 @@
 #pragma once
 
-#include "RenderCompat.hpp"
-
-#include "AnmManager.hpp"
-#include "Supervisor.hpp"
+#include "AnmVm.hpp"
 #include "ZunResult.hpp"
+#include "ZunTimer.hpp"
 #include "inttypes.hpp"
 
 enum PauseMenuState
@@ -33,47 +31,67 @@ enum RetryMenuState
 
 struct PauseMenu
 {
+    PauseMenu();
+
     void OnDraw();
     i32 OnUpdate();
+
+    void UpdatePrev()
+    {
+        for (i32 i = 0; i < 10; i++)
+        {
+            menuSprites[i].UpdatePrev();
+        }
+        menuBackground.UpdatePrev();
+    }
 
     i32 curState;
     i32 numFrames;
     AnmVm menuSprites[10];
     AnmVm menuBackground;
 };
-C_ASSERT(sizeof(PauseMenu) == 0x194c);
 
 #define RETRY_MENU_SPRITES 5
 
 struct RetryMenu
 {
+    RetryMenu();
+
     i32 OnUpdate();
     void OnDraw();
+
+    void UpdatePrev()
+    {
+        for (i32 i = 0; i < 6; i++)
+        {
+            menuSprites[i].UpdatePrev();
+        }
+        menuBackground.UpdatePrev();
+    }
 
     i32 curState;
     i32 numFrames;
     AnmVm menuSprites[RETRY_MENU_SPRITES + 1];
     AnmVm menuBackground;
 };
-C_ASSERT(sizeof(RetryMenu) == 0x101c);
 
 struct AsciiManagerPopup
 {
     u8 digits[8];
-    Float3 pos;
-    D3DCOLOR color;
+    ZunVec3 pos;
+    ZunVec3 prevPos;
+    u32 color;
     ZunTimer timer;
     u8 isInUse;
     u8 characterCount;
     // pad 2
 };
-C_ASSERT(sizeof(AsciiManagerPopup) == 0x28);
 
 struct AsciiManagerString
 {
     char text[64];
-    Float3 pos;
-    D3DCOLOR color;
+    ZunVec3 pos;
+    u32 color;
     Float2 scale;
     ZunBool isSelected;
     ZunBool isGui;
@@ -84,6 +102,8 @@ struct AsciiManagerString
 
 struct AsciiManager
 {
+    AsciiManager();
+
     static ZunResult RegisterChain();
     static void CutChain();
 
@@ -93,28 +113,17 @@ struct AsciiManager
     static u32 OnDrawMenus(AsciiManager *arg);
     static u32 OnDrawPopups(AsciiManager *arg);
 
-    static void AddFormatText(AsciiManager *manager, Float3 *pos,
-                              const char *fmt, ...);
-    void AddString(Float3 *pos, const char *text);
-    void CreatePopup1(Float3 *pos, i32 value, D3DCOLOR color);
-    void CreatePopup2(Float3 *pos, i32 value, D3DCOLOR color);
+    static void AddFormatText(AsciiManager *manager, ZunVec3 *pos, const char *fmt, ...);
+    void AddString(ZunVec3 *pos, const char *text);
+    void CreatePopup1(ZunVec3 *pos, i32 value, u32 color);
+    void CreatePopup2(ZunVec3 *pos, i32 value, u32 color);
     void DrawPopups();
     void DrawStrings();
     void InitializeVms();
     void InitializeOtherVms();
+    void UpdateScripts();
 
-    void UpdateScripts()
-    {
-        g_AnmManager->ExecuteScript(&this->cherryGauge);
-        g_AnmManager->ExecuteScript(&this->cherryDigit);
-        g_AnmManager->ExecuteScript(&this->bossMarkers[0]);
-        g_AnmManager->ExecuteScript(&this->bossMarkers[1]);
-        g_AnmManager->ExecuteScript(&this->bossMarkers[2]);
-        g_AnmManager->ExecuteScript(&this->bossMarkers[3]);
-        g_AnmManager->ExecuteScript(&this->cherryBorderActive);
-    }
-
-    void SetColor(D3DCOLOR color)
+    void SetColor(u32 color)
     {
         this->color = color;
     }
@@ -135,12 +144,12 @@ struct AsciiManager
         return &this->bossMarkers[idx];
     }
 
-    void SetBossMarkerPos(i32 idx, Float3 *pos)
+    void SetBossMarkerPos(i32 idx, ZunVec3 *pos)
     {
         this->bossMarkers[idx].pos = *pos;
     }
 
-    void SetBossDamageTint(i32 idx, D3DCOLOR color)
+    void SetBossDamageTint(i32 idx, u32 color)
     {
         this->bossDamageTint[idx] = color;
     }
@@ -148,6 +157,17 @@ struct AsciiManager
     void SetBossMarkerInterrupt(i32 idx, i32 interrupt)
     {
         this->bossMarkers[idx].pendingInterrupt = interrupt;
+    }
+
+    void UpdatePrev()
+    {
+        this->cherryGauge.UpdatePrev();
+        this->cherryDigit.UpdatePrev();
+        this->cherryBorderActive.UpdatePrev();
+        for (i32 i = 0; i < 4; i++)
+        {
+            this->bossMarkers[i].UpdatePrev();
+        }
     }
 
     AnmVm smallScorePopupVm;
@@ -159,7 +179,7 @@ struct AsciiManager
     i32 bossDamageTint[4];
     AsciiManagerString strings[256];
     i32 numStrings;
-    D3DCOLOR color;
+    u32 color;
     Float2 scale;
     ZunBool isGui;
     ZunBool isSelected;
@@ -173,5 +193,5 @@ struct AsciiManager
     AnmVm vm;
     AsciiManagerPopup popups[MAX_POPUP1 + MAX_POPUP2];
 };
-C_ASSERT(sizeof(AsciiManager) == 0x11194);
+
 extern AsciiManager g_AsciiManager;

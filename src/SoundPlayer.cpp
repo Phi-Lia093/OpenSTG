@@ -1,201 +1,454 @@
 #include "SoundPlayer.hpp"
 
+#include <cstdio>
+
+#include "FileSystem.hpp"
+#include "GameErrorContext.hpp"
+#include "Supervisor.hpp"
 #include "dxutil.hpp"
-#include "i18n.hpp"
 #include "utils.hpp"
 
-// Game state this file reads: the configured window (KillTimer), the audio
-// settings in g_Supervisor.cfg and the error log. Deliberately the only
-// reference to Supervisor.hpp in the translation unit: that header still pulls
-// in the Direct3D 8 types, and RenderCompat.hpp defines its own versions of
-// several of them, so whichever header comes second fails to compile.
-#include "Global.hpp"
-#include "Supervisor.hpp"
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
 
-// GLOBAL: TH07 0x0049ea88
 SoundBufferIdxVolume SOUND_BUFFER_IDX_VOL[38] = {
-    {0, -2000, 0}, {0, -2500, 0}, {1, -1200, 5}, {1, -1500, 5}, {2, -1000, 100}, {3, -400, 100}, {4, -400, 100}, {5, -1500, 50}, {6, -1700, 50}, {7, -1900, 50}, {8, -1000, 100}, {9, -1000, 100}, {10, -1700, 10}, {11, -1200, 10}, {12, -900, 100}, {5, -1500, 50}, {13, -900, 50}, {14, -900, 50}, {15, -900, 100}, {16, -200, 100}, {17, -1400, 0}, {18, -1300, 0}, {5, -100, 20}, {6, -1800, 20}, {7, -1800, 20}, {19, -800, 50}, {20, -1000, 50}, {21, -1300, 50}, {22, -300, 140}, {23, -900, 100}, {24, -900, 20}, {25, -500, 90}, {26, -300, 100}, {27, -300, 100}, {24, -300, 20}, {19, 0, 50}, {28, -300, 100}, {29, -300, 100}};
+    {0, -2000, 0},   {0, -2500, 0},   {1, -1200, 5},   {1, -1500, 5},   {2, -1000, 100},
+    {3, -400, 100},  {4, -400, 100},  {5, -1500, 50},  {6, -1700, 50},  {7, -1900, 50},
+    {8, -1000, 100}, {9, -1000, 100}, {10, -1700, 10}, {11, -1200, 10}, {12, -900, 100},
+    {5, -1500, 50},  {13, -900, 50},  {14, -900, 50},  {15, -900, 100}, {16, -200, 100},
+    {17, -1400, 0},  {18, -1300, 0},  {5, -100, 20},   {6, -1800, 20},  {7, -1800, 20},
+    {19, -800, 50},  {20, -1000, 50}, {21, -1300, 50}, {22, -300, 140}, {23, -900, 100},
+    {24, -900, 20},  {25, -500, 90},  {26, -300, 100}, {27, -300, 100}, {24, -300, 20},
+    {19, 0, 50},     {28, -300, 100}, {29, -300, 100}};
 
-// GLOBAL: TH07 0x0049ebb8
 const char *g_SFXList[30] = {
-    // STRING: TH07 0x00496344
-    "data/wav/se_plst00.wav",
-    // STRING: TH07 0x0049632c
-    "data/wav/se_enep00.wav",
-    // STRING: TH07 0x00496310
-    "data/wav/se_pldead00.wav",
-    // STRING: TH07 0x004962f8
-    "data/wav/se_power0.wav",
-    // STRING: TH07 0x004962e0
-    "data/wav/se_power1.wav",
-    // STRING: TH07 0x004962c8
-    "data/wav/se_tan00.wav",
-    // STRING: TH07 0x004962b0
-    "data/wav/se_tan01.wav",
-    // STRING: TH07 0x00496298
-    "data/wav/se_tan02.wav",
-    // STRING: TH07 0x00496280
-    "data/wav/se_ok00.wav",
-    // STRING: TH07 0x00496264
-    "data/wav/se_cancel00.wav",
-    // STRING: TH07 0x00496248
-    "data/wav/se_select00.wav",
-    // STRING: TH07 0x00496230
-    "data/wav/se_gun00.wav",
-    // STRING: TH07 0x00496218
-    "data/wav/se_cat00.wav",
-    // STRING: TH07 0x00496200
-    "data/wav/se_lazer00.wav",
-    // STRING: TH07 0x004961e8
-    "data/wav/se_lazer01.wav",
-    // STRING: TH07 0x004961d0
-    "data/wav/se_enep01.wav",
-    // STRING: TH07 0x004961b8
-    "data/wav/se_nep00.wav",
-    // STRING: TH07 0x0049619c
-    "data/wav/se_damage00.wav",
-    // STRING: TH07 0x00496184
-    "data/wav/se_item00.wav",
-    // STRING: TH07 0x0049616c
-    "data/wav/se_kira00.wav",
-    // STRING: TH07 0x00496154
-    "data/wav/se_kira01.wav",
-    // STRING: TH07 0x0049613c
-    "data/wav/se_kira02.wav",
-    // STRING: TH07 0x00496124
-    "data/wav/se_extend.wav",
-    // STRING: TH07 0x0049610c
-    "data/wav/se_timeout.wav",
-    // STRING: TH07 0x004960f4
-    "data/wav/se_graze.wav",
-    // STRING: TH07 0x004960dc
-    "data/wav/se_powerup.wav",
-    // STRING: TH07 0x004960c4
-    "data/wav/se_border.wav",
-    // STRING: TH07 0x004960ac
-    "data/wav/se_bonus.wav",
-    // STRING: TH07 0x00496094
-    "data/wav/se_bonus2.wav",
-    // STRING: TH07 0x0049607c
-    "data/wav/se_pause.wav",
+    "data/wav/se_plst00.wav",   "data/wav/se_enep00.wav",   "data/wav/se_pldead00.wav",
+    "data/wav/se_power0.wav",   "data/wav/se_power1.wav",   "data/wav/se_tan00.wav",
+    "data/wav/se_tan01.wav",    "data/wav/se_tan02.wav",    "data/wav/se_ok00.wav",
+    "data/wav/se_cancel00.wav", "data/wav/se_select00.wav", "data/wav/se_gun00.wav",
+    "data/wav/se_cat00.wav",    "data/wav/se_lazer00.wav",  "data/wav/se_lazer01.wav",
+    "data/wav/se_enep01.wav",   "data/wav/se_nep00.wav",    "data/wav/se_damage00.wav",
+    "data/wav/se_item00.wav",   "data/wav/se_kira00.wav",   "data/wav/se_kira01.wav",
+    "data/wav/se_kira02.wav",   "data/wav/se_extend.wav",   "data/wav/se_timeout.wav",
+    "data/wav/se_graze.wav",    "data/wav/se_powerup.wav",  "data/wav/se_border.wav",
+    "data/wav/se_bonus.wav",    "data/wav/se_bonus2.wav",   "data/wav/se_pause.wav",
 };
 
-// How many times one sound effect may overlap itself. What matters in play is
-// a few shots landing in the same frame; this bounds the work the audio
-// callback does as well.
-#define SOUND_VOICES_PER_EFFECT 8
-
-// GLOBAL: TH07 0x004ba0d8
 SoundPlayer g_SoundPlayer;
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::InitializeDSound()
-// Desc: Brings SDL audio up and creates the CSoundManager. The name is the
-//       original's and is part of the game's interface; DirectSound itself is
-//       gone, the manager now just owns the SDL audio subsystem.
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0044b560
-ZunResult SoundPlayer::InitializeDSound(HWND gameWindow)
+static ma_result ThBgmDataSource_read(ma_data_source *pDataSource, void *pFramesOut,
+                                      ma_uint64 frameCount, ma_uint64 *pFramesRead)
 {
-    if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO))
+    ThBgmDataSource *pBgm = (ThBgmDataSource *)pDataSource;
+    if (!pBgm || !pFramesRead)
     {
-        g_GameErrorContext.Log(TH_ERR_DSOUND_INIT_FAIL);
-        return ZUN_ERROR;
+        return MA_INVALID_ARGS;
     }
+
+    ma_uint32 frameSize = ma_get_bytes_per_frame(pBgm->format, pBgm->channels);
+    ma_uint64 totalFramesRead = 0;
+    u8 *pByteOut = (u8 *)pFramesOut;
+
+    while (totalFramesRead < frameCount)
+    {
+        ma_uint64 framesRemainingToRead = frameCount - totalFramesRead;
+        ma_uint64 bytesRemainingToRead = framesRemainingToRead * frameSize;
+
+        if (pBgm->segmentBytesRemaining == 0)
+        {
+            if (pBgm->isMemory)
+            {
+                pBgm->currentOffset = pBgm->pFmt->introLength;
+            }
+            else
+            {
+                if (pBgm->file)
+                {
+                    SDL_SeekIO(pBgm->file,
+                               g_SoundPlayer.bgmSeekOffset + pBgm->pFmt->startOffset +
+                                   pBgm->pFmt->introLength,
+                               SDL_IO_SEEK_SET);
+                    pBgm->currentOffset = pBgm->pFmt->introLength;
+                }
+            }
+            pBgm->segmentBytesRemaining = pBgm->pFmt->totalLength - pBgm->pFmt->introLength;
+        }
+
+        ma_uint64 bytesToReadThisStep = bytesRemainingToRead;
+        if (bytesToReadThisStep > pBgm->segmentBytesRemaining)
+        {
+            bytesToReadThisStep = pBgm->segmentBytesRemaining;
+        }
+
+        ma_uint64 framesToReadThisStep = bytesToReadThisStep / frameSize;
+        if (framesToReadThisStep == 0)
+        {
+            break;
+        }
+
+        bytesToReadThisStep = framesToReadThisStep * frameSize;
+        size_t bytesActuallyRead = 0;
+
+        if (pBgm->isMemory)
+        {
+            if (pBgm->pData)
+            {
+                if (pBgm->currentOffset + bytesToReadThisStep > pBgm->dataSize)
+                {
+                    bytesToReadThisStep = pBgm->dataSize - pBgm->currentOffset;
+                    framesToReadThisStep = bytesToReadThisStep / frameSize;
+                    bytesToReadThisStep = framesToReadThisStep * frameSize;
+                }
+                if (bytesToReadThisStep > 0)
+                {
+                    memcpy(pByteOut + (totalFramesRead * frameSize),
+                           pBgm->pData + pBgm->currentOffset, (size_t)bytesToReadThisStep);
+                    pBgm->currentOffset += (u32)bytesToReadThisStep;
+                    bytesActuallyRead = (size_t)bytesToReadThisStep;
+                }
+            }
+        }
+        else
+        {
+            if (pBgm->file)
+            {
+                bytesActuallyRead = SDL_ReadIO(pBgm->file, pByteOut + (totalFramesRead * frameSize),
+                                               (size_t)bytesToReadThisStep);
+                pBgm->currentOffset += (u32)bytesActuallyRead;
+            }
+        }
+
+        if (bytesActuallyRead == 0)
+        {
+            break;
+        }
+
+        ma_uint64 framesActuallyRead = bytesActuallyRead / frameSize;
+        totalFramesRead += framesActuallyRead;
+        pBgm->segmentBytesRemaining -= (u32)(framesActuallyRead * frameSize);
+
+        if (framesActuallyRead < framesToReadThisStep)
+        {
+            break;
+        }
+    }
+
+    *pFramesRead = totalFramesRead;
+
+    if (totalFramesRead == 0 && frameCount > 0)
+    {
+        return MA_AT_END;
+    }
+
+    return MA_SUCCESS;
+}
+
+static ma_result ThBgmDataSource_seek(ma_data_source *pDataSource, ma_uint64 frameIndex)
+{
+    ThBgmDataSource *pBgm = (ThBgmDataSource *)pDataSource;
+    if (!pBgm)
+    {
+        return MA_INVALID_ARGS;
+    }
+
+    ma_uint32 frameSize = ma_get_bytes_per_frame(pBgm->format, pBgm->channels);
+    ma_uint64 targetByteOffset = frameIndex * frameSize;
+
+    if (targetByteOffset < (ma_uint64)pBgm->pFmt->totalLength)
+    {
+        pBgm->currentOffset = (u32)targetByteOffset;
+        if (!pBgm->isMemory && pBgm->file)
+        {
+            SDL_SeekIO(pBgm->file,
+                       g_SoundPlayer.bgmSeekOffset + pBgm->pFmt->startOffset + pBgm->currentOffset,
+                       SDL_IO_SEEK_SET);
+        }
+        pBgm->segmentBytesRemaining = pBgm->pFmt->totalLength - pBgm->currentOffset;
+    }
+    else
+    {
+        ma_uint64 loopStart = pBgm->pFmt->introLength;
+        ma_uint64 loopEnd = pBgm->pFmt->totalLength;
+        ma_uint64 loopLen = loopEnd - loopStart;
+
+        if (loopLen == 0)
+        {
+            return MA_INVALID_ARGS;
+        }
+
+        ma_uint64 relativeOffset = targetByteOffset - loopEnd;
+        ma_uint64 finalByteOffset = loopStart + (relativeOffset % loopLen);
+
+        pBgm->currentOffset = (u32)finalByteOffset;
+        if (!pBgm->isMemory && pBgm->file)
+        {
+            SDL_SeekIO(pBgm->file,
+                       g_SoundPlayer.bgmSeekOffset + pBgm->pFmt->startOffset + pBgm->currentOffset,
+                       SDL_IO_SEEK_SET);
+        }
+        pBgm->segmentBytesRemaining = (u32)(loopEnd - pBgm->currentOffset);
+    }
+
+    return MA_SUCCESS;
+}
+
+static ma_result ThBgmDataSource_get_format(ma_data_source *pDataSource, ma_format *pFormat,
+                                            ma_uint32 *pChannels, ma_uint32 *pSampleRate,
+                                            ma_channel *pChannelMap, size_t channelMapCap)
+{
+    ThBgmDataSource *pBgm = (ThBgmDataSource *)pDataSource;
+    if (!pBgm)
+    {
+        return MA_INVALID_ARGS;
+    }
+
+    if (pFormat)
+    {
+        *pFormat = pBgm->format;
+    }
+    if (pChannels)
+    {
+        *pChannels = pBgm->channels;
+    }
+    if (pSampleRate)
+    {
+        *pSampleRate = pBgm->sampleRate;
+    }
+
+    if (pChannelMap)
+    {
+        ma_channel_map_init_standard(ma_standard_channel_map_default, pChannelMap, channelMapCap,
+                                     pBgm->channels);
+    }
+
+    return MA_SUCCESS;
+}
+
+static ma_result ThBgmDataSource_get_cursor(ma_data_source *pDataSource, ma_uint64 *pCursor)
+{
+    ThBgmDataSource *pBgm = (ThBgmDataSource *)pDataSource;
+    if (!pBgm || !pCursor)
+    {
+        return MA_INVALID_ARGS;
+    }
+
+    ma_uint32 frameSize = ma_get_bytes_per_frame(pBgm->format, pBgm->channels);
+    if (pBgm->isMemory)
+    {
+        *pCursor = pBgm->currentOffset / frameSize;
+    }
+    else
+    {
+        if (pBgm->file)
+        {
+            i64 pos = SDL_TellIO(pBgm->file);
+            long baseOffset = g_SoundPlayer.bgmSeekOffset + pBgm->pFmt->startOffset;
+            if (pos >= baseOffset)
+            {
+                *pCursor = (pos - baseOffset) / frameSize;
+            }
+            else
+            {
+                *pCursor = 0;
+            }
+        }
+        else
+        {
+            *pCursor = 0;
+        }
+    }
+    return MA_SUCCESS;
+}
+
+static ma_result ThBgmDataSource_get_length(ma_data_source *pDataSource, ma_uint64 *pLength)
+{
+    ThBgmDataSource *pBgm = (ThBgmDataSource *)pDataSource;
+    if (!pBgm || !pLength)
+    {
+        return MA_INVALID_ARGS;
+    }
+
+    ma_uint32 frameSize = ma_get_bytes_per_frame(pBgm->format, pBgm->channels);
+    *pLength = pBgm->pFmt->totalLength / frameSize;
+    return MA_SUCCESS;
+}
+
+static ma_data_source_vtable g_ThBgmDataSourceVtable = {ThBgmDataSource_read,
+                                                        ThBgmDataSource_seek,
+                                                        ThBgmDataSource_get_format,
+                                                        ThBgmDataSource_get_cursor,
+                                                        ThBgmDataSource_get_length,
+                                                        NULL,
+                                                        0};
+
+static void InitBgmData(ThBgmDataSource *pBgm, ThBgmFormat *pFmt)
+{
+    pBgm->pFmt = pFmt;
+    pBgm->currentOffset = 0;
+    pBgm->segmentBytesRemaining = pFmt->totalLength;
+    pBgm->channels = 2;
+    pBgm->sampleRate = 44100;
+    pBgm->format = ma_format_s16;
+}
+
+static bool ThBgmDataSource_init_file(ThBgmDataSource *pBgm, const char *path, ThBgmFormat *pFmt)
+{
+    memset(pBgm, 0, sizeof(*pBgm));
+    InitBgmData(pBgm, pFmt);
+    pBgm->isMemory = false;
+
+    pBgm->file = SDL_IOFromFile(path, "rb");
+    if (!pBgm->file)
+    {
+        return false;
+    }
+
+    SDL_SeekIO(pBgm->file, g_SoundPlayer.bgmSeekOffset + pFmt->startOffset, SDL_IO_SEEK_SET);
+
+    ma_data_source_config config = ma_data_source_config_init();
+    config.vtable = &g_ThBgmDataSourceVtable;
+    if (ma_data_source_init(&config, &pBgm->base) != MA_SUCCESS)
+    {
+        SDL_CloseIO(pBgm->file);
+        return false;
+    }
+    return true;
+}
+
+static bool ThBgmDataSource_init_memory(ThBgmDataSource *pBgm, const u8 *pData, u32 dataSize,
+                                        ThBgmFormat *pFmt)
+{
+    memset(pBgm, 0, sizeof(*pBgm));
+    InitBgmData(pBgm, pFmt);
+    pBgm->isMemory = true;
+    pBgm->pData = pData;
+    pBgm->dataSize = dataSize;
+
+    ma_data_source_config config = ma_data_source_config_init();
+    config.vtable = &g_ThBgmDataSourceVtable;
+    if (ma_data_source_init(&config, &pBgm->base) != MA_SUCCESS)
+    {
+        return false;
+    }
+    return true;
+}
+
+SoundPlayer::SoundPlayer()
+{
+    memset(this, 0, sizeof(SoundPlayer));
+    for (i32 i = 0; i < ARRAY_SIZE_SIGNED(this->unusedSoundVolRelated); i++)
+    {
+        this->unusedSoundVolRelated[i] = -1;
+    }
+}
+
+ZunResult SoundPlayer::InitializeSound()
+{
+    ma_engine_config engineConfig;
+    ma_device_config deviceConfig;
 
     memset(this, 0, sizeof(SoundPlayer));
     for (i32 i = 0; i < ARRAY_SIZE_SIGNED(this->unusedSoundVolRelated); i++)
     {
         this->unusedSoundVolRelated[i] = -1;
     }
-    this->gameWindow = gameWindow;
-    this->manager = ZUN_NEW(CSoundManager, "");
-    if (!this->manager ||
-        FAILED(this->manager->Initialize(gameWindow, 2, 2, 44100, 16)))
+
+    this->engine = new ma_engine;
+    this->device = new ma_device;
+
+    deviceConfig = ma_device_config_init(ma_device_type_playback);
+    deviceConfig.playback.format = ma_format_f32;
+    deviceConfig.playback.channels = 2;
+    deviceConfig.sampleRate = 44100;
+    deviceConfig.periods = 3;
+    deviceConfig.periodSizeInMilliseconds = 10;
+    deviceConfig.dataCallback = ma_engine_data_callback_internal;
+    deviceConfig.pUserData = this->engine;
+    deviceConfig.noPreSilencedOutputBuffer = MA_TRUE;
+    deviceConfig.noClip = MA_TRUE;
+
+    if (ma_device_init(NULL, &deviceConfig, this->device) != MA_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_DSOUND_INIT_FAIL);
-        if (this->manager)
-        {
-            ZUN_DELETE(this->manager);
-        }
-        // No audio device. Everything below already copes with a missing
-        // manager, so the game runs (silently) instead of refusing to start.
+        g_GameErrorContext.Log("DirectSound オブジェクトの初期化が失敗したよ\n");
+        SAFE_DELETE(this->device);
+        SAFE_DELETE(this->engine);
         return ZUN_ERROR;
     }
 
-    this->backgroundMusicThreadHandle = NULL;
-    g_GameErrorContext.Log(TH_LOG_DSOUND_INIT_SUCCESS);
+    engineConfig = ma_engine_config_init();
+    engineConfig.pDevice = this->device;
+
+    if (ma_engine_init(&engineConfig, this->engine) != MA_SUCCESS)
+    {
+        g_GameErrorContext.Log("DirectSound オブジェクトの初期化が失敗したよ\n");
+        ma_device_uninit(this->device);
+        SAFE_DELETE(this->device);
+        SAFE_DELETE(this->engine);
+        return ZUN_ERROR;
+    }
+
+    if (ma_engine_start(this->engine) != MA_SUCCESS)
+    {
+        g_GameErrorContext.Log("DirectSound オブジェクトの初期化が失敗したよ\n");
+        ma_engine_uninit(this->engine);
+        ma_device_uninit(this->device);
+        SAFE_DELETE(this->device);
+        SAFE_DELETE(this->engine);
+        return ZUN_ERROR;
+    }
+
+    g_GameErrorContext.Log("DirectSound は正常に初期化されました\n");
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044b830
 ZunResult SoundPlayer::Release()
 {
     i32 i;
 
-    if (!this->manager)
+    if (!this->engine)
     {
         return ZUN_SUCCESS;
     }
 
-    for (i = 0; i < ARRAY_SIZE_SIGNED(this->sounds); i++)
+    for (i = 0; i < ARRAY_SIZE_SIGNED(this->soundBuffers); i++)
     {
-        SAFE_DELETE(this->sounds[i]);
-        SAFE_DELETE(this->duplicateSoundBuffers[i]);
+        if (this->soundBuffers[i])
+        {
+            ma_sound_uninit(this->soundBuffers[i]);
+            SAFE_DELETE(this->soundBuffers[i]);
+        }
+        if (this->duplicateSfxData[i])
+        {
+            ma_audio_buffer_uninit(this->duplicateSfxData[i]);
+            SAFE_DELETE(this->duplicateSfxData[i]);
+        }
+        if (this->sfxPCMData[i])
+        {
+            ma_free(this->sfxPCMData[i], NULL);
+            this->sfxPCMData[i] = NULL;
+        }
     }
-    if (this->backgroundMusic)
-    {
-        ZUN_DELETE(this->backgroundMusic);
-    }
+
     StopBGM();
-    KillTimer(this->gameWindow, 1);
-    if (this->manager)
-    {
-        ZUN_DELETE(this->manager);
-    }
+
+    ma_device_uninit(this->device);
+    SAFE_DELETE(this->device);
     for (i = 0; i < ARRAY_SIZE_SIGNED(this->bgmPreloadData); i++)
     {
         SAFE_FREE(this->bgmPreloadData[i]);
-        this->bgmPreloadDataCursor[i] = NULL;
-        this->bgmPreloadFmtData[i] = NULL;
     }
     if (this->bgmFmtData)
     {
-        ZUN_FREE(this->bgmFmtData);
+        free(this->bgmFmtData);
     }
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044ba80
-WAVEFORMATEX *SoundPlayer::GetWavFormatData(u8 *soundData,
-                                            const char *formatString,
-                                            i32 *formatSize,
-                                            u32 fileSizeExcludingFormat)
-{
-    while (fileSizeExcludingFormat > 0)
-    {
-        *formatSize = *(i32 *)(soundData + 4);
-        if (strncmp((char *)soundData, formatString, 4) == 0)
-        {
-            return (WAVEFORMATEX *)(soundData + 8);
-        }
-        fileSizeExcludingFormat = fileSizeExcludingFormat - (*formatSize + 8);
-        soundData += +*formatSize + 8;
-    }
-    return NULL;
-}
-
-// FUNCTION: TH07 0x0044baf0
 i32 SoundPlayer::GetFmtIndexByName(const char *name)
 {
-    char nameBuf[128];
+    std::string filename;
     i32 fmtIdx;
     const char *slashPos;
-
-    if (!this->bgmFmtData)
-    {
-        return 0;
-    }
 
     fmtIdx = 0;
     slashPos = strrchr(name, '/');
@@ -205,17 +458,15 @@ i32 SoundPlayer::GetFmtIndexByName(const char *name)
     }
     if (!slashPos)
     {
-        strncpy(nameBuf, name, sizeof(nameBuf) - 1);
-        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        filename = name;
     }
     else
     {
-        strncpy(nameBuf, slashPos + 1, sizeof(nameBuf) - 1);
-        nameBuf[sizeof(nameBuf) - 1] = '\0';
+        filename = slashPos + 1;
     }
     while (this->bgmFmtData[fmtIdx].name[0] != '\0')
     {
-        if (strcmp(this->bgmFmtData[fmtIdx].name, nameBuf) == 0)
+        if (strcmp(this->bgmFmtData[fmtIdx].name, filename.c_str()) == 0)
         {
             break;
         }
@@ -228,201 +479,110 @@ i32 SoundPlayer::GetFmtIndexByName(const char *name)
     return fmtIdx;
 }
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::LoadSound()
-// Desc: Decodes one WAV out of th07.dat into a CSound. The RIFF walk is the
-//       original's: "fmt " gives the WAVEFORMATEX and "data" the PCM, which is
-//       then handed to SDL as a stream in exactly that format.
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0044bd00
 ZunResult SoundPlayer::LoadSound(i32 idx, const char *path)
 {
+    void *frames;
+    ma_uint64 frameCount;
     u8 *soundFileDat;
-    WAVEFORMATEX wavData;
-    WAVEFORMATEX *wavDataPtr;
-    WAVEFORMATEX *audioPtr;
-    u8 *dataChunk;
-    i32 formatSize;
-    u8 *cursor;
-    i32 fileSize;
-    i32 dataSize;
 
-    if (!this->manager)
+    if (!this->engine)
     {
         return ZUN_SUCCESS;
     }
-    if (idx < 0 || idx >= ARRAY_SIZE_SIGNED(this->sounds))
+
+    if (this->sfxPCMData[idx])
     {
-        return ZUN_ERROR;
+        ma_free(this->sfxPCMData[idx], NULL);
+        this->sfxPCMData[idx] = NULL;
     }
 
-    SAFE_DELETE(this->sounds[idx]);
     soundFileDat = FileSystem::OpenFile(path, 0);
-    cursor = soundFileDat;
-    if (!cursor)
+    if (!soundFileDat)
     {
         return ZUN_ERROR;
     }
 
-    // STRING: TH07 0x0049601c
-    if (strncmp((char *)cursor, "RIFF", 4) != 0)
+    if (strncmp((char *)soundFileDat, "RIFF", 4) != 0)
     {
-        g_GameErrorContext.Log(TH_ERR_NOT_A_WAV, path);
-        ZUN_FREE(soundFileDat);
+        g_GameErrorContext.Log("Wav ファイルじゃない %s\n", path);
+        free(soundFileDat);
         return ZUN_ERROR;
     }
 
-    cursor += 4;
-    fileSize = *(i32 *)cursor;
-    cursor += 4;
+    i32 fileSize = *(u32 *)(soundFileDat + 4) + 8;
 
-    // STRING: TH07 0x00495ff8
-    if (strncmp((char *)cursor, "WAVE", 4) != 0)
+    ma_decoder_config decoderConfig = ma_decoder_config_init(ma_format_f32, 2, 44100);
+    if (ma_decode_memory(soundFileDat, fileSize, &decoderConfig, &frameCount, &frames) !=
+        MA_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_PROBABLY_NOT_A_WAV, path);
-        ZUN_FREE(soundFileDat);
+        g_GameErrorContext.Log("Wav ファイルじゃない? %s\n", path);
+        free(soundFileDat);
         return ZUN_ERROR;
     }
+    this->sfxPCMData[idx] = frames;
+    this->sfxFrameCount[idx] = frameCount;
 
-    cursor += 4;
-    // STRING: TH07 0x00495fd4
-    wavDataPtr = GetWavFormatData(cursor, "fmt ", &formatSize, fileSize - 12);
-    if (!wavDataPtr)
-    {
-        g_GameErrorContext.Log(TH_ERR_PROBABLY_NOT_A_WAV, path);
-        ZUN_FREE(soundFileDat);
-        return ZUN_ERROR;
-    }
-
-    memcpy(&wavData, wavDataPtr, sizeof(WAVEFORMATEX));
-    wavData.cbSize = 0;
-
-    // audioPtr is the header of the "data" chunk: FormatSize from
-    // GetWavFormatData is the chunk's payload size, and the PCM starts 8 bytes
-    // into the chunk (fourcc + size).
-    audioPtr = GetWavFormatData(cursor, "data", &formatSize, fileSize - 12);
-    if (!audioPtr)
-    {
-        g_GameErrorContext.Log(TH_ERR_PROBABLY_NOT_A_WAV, path);
-        ZUN_FREE(soundFileDat);
-        return ZUN_ERROR;
-    }
-    dataChunk = (u8 *)audioPtr - 8;
-    dataSize = formatSize;
-    // Bound the chunk by the RIFF end ("RIFF" + dwRiffSize) and by what was
-    // actually allocated, so a truncated file cannot be read past its end.
-    if (dataSize <= 0 || (DWORD)(dataChunk - soundFileDat) + 8 + (DWORD)dataSize >
-                              (DWORD)fileSize + 8 ||
-        (DWORD)(dataChunk - soundFileDat) + 8 + (DWORD)dataSize > g_LastFileSize)
-    {
-        g_GameErrorContext.Log(TH_ERR_PROBABLY_NOT_A_WAV, path);
-        ZUN_FREE(soundFileDat);
-        return ZUN_ERROR;
-    }
-
-    this->sounds[idx] = new CSound(dataChunk + 8, (DWORD)dataSize,
-                                   SOUND_VOICES_PER_EFFECT, new CWaveFile(),
-                                   &wavData);
-
-    ZUN_FREE(soundFileDat);
+    free(soundFileDat);
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044bff0
 ZunResult SoundPlayer::LoadFmt(const char *path)
 {
-    if (this->bgmFmtData)
-    {
-        ZUN_FREE(this->bgmFmtData);
-    }
     this->bgmFmtData = (ThBgmFormat *)FileSystem::OpenFile(path, 0);
     return this->bgmFmtData != NULL ? ZUN_SUCCESS : ZUN_ERROR;
 }
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::StartBGM()
-// Desc: Opens the ZWAV archive for streaming and starts the BGM thread.
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0044c020
 ZunResult SoundPlayer::StartBGM(const char *path)
 {
-    ThBgmFormat *pzwf;
-    DWORD blockAlign;
-    DWORD samplesPerSec;
-    DWORD notifySize;
-
-    if (!this->manager)
+    SDL_strlcpy(this->bgmArchivePath, FileSystem::GetBasePath(path).c_str(),
+                sizeof(this->bgmArchivePath));
+    if (!this->engine)
     {
         return ZUN_ERROR;
     }
 
-    strcpy(this->bgmArchivePath, path);
-
-    // STRING: TH07 0x00495fb4
-    utils::DebugPrint("Streming BGM Start\r\n");
+    Supervisor::DebugPrint("Streming BGM Start\n");
     StopBGM();
-    if (!this->bgmFmtData)
-    {
-        return ZUN_ERROR;
-    }
-    pzwf = this->bgmFmtData;
-    blockAlign = pzwf->format.nBlockAlign;
-    samplesPerSec = pzwf->format.nSamplesPerSec;
-    if (blockAlign == 0 || samplesPerSec == 0)
-    {
-        return ZUN_ERROR;
-    }
-    notifySize = samplesPerSec * 4 * blockAlign >> 4;
-    notifySize -= notifySize % blockAlign;
-    this->backgroundMusicUpdateEvent = CreateEventA(NULL, 0, 0, NULL);
-    this->backgroundMusicThreadHandle = CreateThread(
-        NULL, 0, BackgroundMusicPlayerThread, g_Supervisor.hwndGameWindow, 0,
-        &this->backgroundMusicThreadId);
-    if (FAILED(this->manager->CreateStreaming(
-            &this->backgroundMusic, path,
-            SDLSND_PLAY_ONCE, GUID_NULL, 16, notifySize, pzwf)))
-    {
-        utils::DebugPrint(TH_ERR_STREAMING_SOUND_BUFFER_CREATE_FAIL);
-        return ZUN_ERROR;
-    }
 
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044c1b0
 ZunResult SoundPlayer::ReopenBGM(const char *name)
 {
-    i32 fmtIdx;
+    i32 fmtIdx = GetFmtIndexByName(name);
+    StopBGM();
 
-    if (!this->backgroundMusic || !this->bgmFmtData)
+    this->bgmDataSource = new ThBgmDataSource;
+    if (!ThBgmDataSource_init_file(this->bgmDataSource, this->bgmArchivePath,
+                                   &this->bgmFmtData[fmtIdx]))
     {
+        SAFE_DELETE(this->bgmDataSource);
         return ZUN_ERROR;
     }
 
-    fmtIdx = GetFmtIndexByName(name);
-
-    this->backgroundMusic->GetWaveFile()->Reopen(&this->bgmFmtData[fmtIdx]);
-    // The new track may run at a different sample rate; reopen the stream with
-    // that track's format and drop whatever the previous one left queued.
-    this->backgroundMusic->ReopenStream(&this->bgmFmtData[fmtIdx].format);
-    this->backgroundMusic->Reset();
-    // STRING: TH07 0x00495f54
-    utils::DebugPrint("Streming BGM Reopen %d\r\n", fmtIdx);
+    this->backgroundMusic = new ma_sound;
+    if (ma_sound_init_from_data_source(this->engine, &this->bgmDataSource->base, 0, NULL,
+                                       this->backgroundMusic) != MA_SUCCESS)
+    {
+        SAFE_DELETE(this->backgroundMusic);
+        if (this->bgmDataSource->file)
+        {
+            SDL_CloseIO(this->bgmDataSource->file);
+        }
+        ma_data_source_uninit(&this->bgmDataSource->base);
+        SAFE_DELETE(this->bgmDataSource);
+        return ZUN_ERROR;
+    }
+    Supervisor::DebugPrint("Streming BGM Reopen %d\n", fmtIdx);
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044c220
 ZunResult SoundPlayer::PreloadBGM(i32 idx, const char *path)
 {
-    LPBYTE lpBuffer;
-    HANDLE handle;
-    DWORD bytesRead;
+    u8 *lpBuffer;
+    SDL_IOStream *file;
     i32 fmtIdx;
 
-    if (idx < 0 || idx >= ARRAY_SIZE_SIGNED(this->bgmPreloadData))
-    {
-        return ZUN_ERROR;
-    }
     if (this->bgmPreloadData[idx])
     {
         if (strcmp(path, this->bgmFileNames[idx]) == 0)
@@ -436,64 +596,47 @@ ZunResult SoundPlayer::PreloadBGM(i32 idx, const char *path)
         return ZUN_SUCCESS;
     }
 
-    if (!this->manager || !this->bgmFmtData)
+    if (!this->engine)
     {
         return ZUN_SUCCESS;
     }
 
-    // STRING: TH07 0x00495f38
-    utils::DebugPrint("Streming BGM PreLoad %d\r\n", idx);
-    handle = CreateFileA(this->bgmArchivePath, GENERIC_READ, FILE_SHARE_READ, NULL, 3,
-                         FILE_FLAG_SEQUENTIAL_SCAN | FILE_ATTRIBUTE_NORMAL, NULL);
-    if (handle == INVALID_HANDLE_VALUE)
+    SAFE_FREE(this->bgmPreloadData[idx]);
+    Supervisor::DebugPrint("Streming BGM PreLoad %d\n", idx);
+    file = SDL_IOFromFile(this->bgmArchivePath, "rb");
+    if (!file)
     {
-        // STRING: TH07 0x00495f14
-        utils::DebugPrint("error : bgmfile is not find %s\r\n", this->bgmArchivePath);
+        Supervisor::DebugPrint("error : bgmfile is not find %s\n", this->bgmArchivePath);
         return ZUN_ERROR;
     }
 
     fmtIdx = GetFmtIndexByName(path);
-    SetFilePointer(handle, this->bgmFmtData[fmtIdx].startOffset, NULL, 0);
-    lpBuffer = (LPBYTE)ZUN_ALLOC(this->bgmFmtData[fmtIdx].preloadAllocSize);
+    SDL_SeekIO(file, this->bgmFmtData[fmtIdx].startOffset, SDL_IO_SEEK_SET);
+    lpBuffer = (u8 *)malloc(this->bgmFmtData[fmtIdx].preloadAllocSize);
     if (!lpBuffer)
     {
-        CloseHandle(handle);
-        utils::DebugPrint("error : bgmfile is not find %s\r\n", this->bgmArchivePath);
+        SDL_CloseIO(file);
+        Supervisor::DebugPrint("error : bgmfile is not find %s\n", this->bgmArchivePath);
         return ZUN_ERROR;
     }
 
-    bytesRead = 0;
-    ReadFile(handle, lpBuffer, this->bgmFmtData[fmtIdx].preloadAllocSize,
-             &bytesRead, NULL);
-    CloseHandle(handle);
-    SAFE_FREE(this->bgmPreloadData[idx]);
-    this->bgmPreloadFmtData[idx] = this->bgmFmtData + fmtIdx;
+    SDL_ReadIO(file, lpBuffer, this->bgmFmtData[fmtIdx].preloadAllocSize);
+    SDL_CloseIO(file);
+    this->bgmPreloadFmtData[idx] = &this->bgmFmtData[fmtIdx];
     this->bgmPreloadData[idx] = lpBuffer;
     this->bgmPreloadDataCursor[idx] = lpBuffer;
-    this->bgmPreloadAllocSizes[idx] =
-        this->bgmPreloadFmtData[idx]->preloadAllocSize;
+    this->bgmPreloadAllocSizes[idx] = this->bgmPreloadFmtData[idx]->preloadAllocSize;
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044c4d0
 ZunResult SoundPlayer::LoadBGM(i32 idx)
 {
-    ThBgmFormat *preloadFmt;
-    DWORD blockAlign;
-    DWORD samplesPerSec;
-    DWORD notifySize;
-
-    if (!this->manager)
+    if (!this->engine)
     {
         return ZUN_ERROR;
     }
 
     if (g_Supervisor.cfg.musicMode == MUSIC_OFF)
-    {
-        return ZUN_ERROR;
-    }
-
-    if (idx < 0 || idx >= ARRAY_SIZE_SIGNED(this->bgmPreloadData))
     {
         return ZUN_ERROR;
     }
@@ -507,88 +650,57 @@ ZunResult SoundPlayer::LoadBGM(i32 idx)
     {
         return ZUN_ERROR;
     }
+    Supervisor::DebugPrint("Streming BGM Load no %d\n", idx);
+    StopBGM();
 
-    // STRING: TH07 0x00495ef8
-    utils::DebugPrint("Streming BGM Load no %d\r\n", idx);
-    preloadFmt = this->bgmPreloadFmtData[idx];
-    blockAlign = preloadFmt->format.nBlockAlign;
-    samplesPerSec = preloadFmt->format.nSamplesPerSec;
-    if (blockAlign == 0 || samplesPerSec == 0)
+    this->bgmDataSource = new ThBgmDataSource;
+    if (!ThBgmDataSource_init_memory(this->bgmDataSource, this->bgmPreloadDataCursor[idx],
+                                     this->bgmPreloadAllocSizes[idx], this->bgmPreloadFmtData[idx]))
     {
-        return ZUN_ERROR;
-    }
-    notifySize = samplesPerSec * 4 * blockAlign >> 4;
-    notifySize -= notifySize % blockAlign;
-
-    // The previous track's stream has to go before a new one is opened.
-    if (this->backgroundMusic)
-    {
-        ZUN_DELETE(this->backgroundMusic);
-    }
-
-    this->backgroundMusicUpdateEvent = CreateEventA(NULL, 0, 0, NULL);
-    this->backgroundMusicThreadHandle = CreateThread(
-        NULL, 0, BackgroundMusicPlayerThread, g_Supervisor.hwndGameWindow, 0,
-        &this->backgroundMusicThreadId);
-    if (FAILED(this->manager->CreateStreamingFromMemory(
-            &this->backgroundMusic, this->bgmPreloadDataCursor[idx],
-            this->bgmPreloadAllocSizes[idx], this->bgmPreloadFmtData[idx],
-            SDLSND_PLAY_ONCE, GUID_NULL, 16, notifySize)))
-    {
-        utils::DebugPrint(TH_ERR_STREAMING_SOUND_BUFFER_CREATE_FAIL);
+        SAFE_DELETE(this->bgmDataSource);
         return ZUN_ERROR;
     }
 
-    // STRING: TH07 0x00495eec
-    utils::DebugPrint("load comp\r\n");
+    this->backgroundMusic = new ma_sound;
+    if (ma_sound_init_from_data_source(this->engine, &this->bgmDataSource->base, 0, NULL,
+                                       this->backgroundMusic) != MA_SUCCESS)
+    {
+        SAFE_DELETE(this->backgroundMusic);
+        ma_data_source_uninit(&this->bgmDataSource->base);
+        SAFE_DELETE(this->bgmDataSource);
+        return ZUN_ERROR;
+    }
+
+    Supervisor::DebugPrint("load comp\n");
     this->curBgmIdx = idx;
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044c6b0
 void SoundPlayer::StopBGM()
 {
     if (this->backgroundMusic)
     {
-        // STRING: TH07 0x00495ed8
-        utils::DebugPrint("Streming BGM stop\r\n");
-        this->backgroundMusic->Stop();
-        if (this->backgroundMusicThreadHandle)
+        Supervisor::DebugPrint("Streming BGM stop\n");
+        ma_sound_stop(this->backgroundMusic);
+        ma_sound_uninit(this->backgroundMusic);
+        SAFE_DELETE(this->backgroundMusic);
+    }
+    if (this->bgmDataSource)
+    {
+        if (this->bgmDataSource->file)
         {
-            PostThreadMessageA(this->backgroundMusicThreadId, WM_QUIT, 0, 0);
-            // STRING: TH07 0x00495ebc
-            utils::DebugPrint("stop m_dwNotifyThreadID\r\n");
-            while (WaitForSingleObject(this->backgroundMusicThreadHandle, 256) !=
-                   0)
-            {
-                PostThreadMessageA(this->backgroundMusicThreadId, WM_QUIT, 0, 0);
-            }
-            // STRING: TH07 0x00495eb0
-            utils::DebugPrint("stop comp\r\n");
-            CloseHandle(this->backgroundMusicThreadHandle);
-            CloseHandle(this->backgroundMusicUpdateEvent);
-            this->backgroundMusicThreadHandle = NULL;
-            this->backgroundMusicUpdateEvent = NULL;
+            SDL_CloseIO(this->bgmDataSource->file);
         }
-
-        if (this->backgroundMusic)
-        {
-            ZUN_DELETE(this->backgroundMusic);
-        }
+        ma_data_source_uninit(&this->bgmDataSource->base);
+        SAFE_DELETE(this->bgmDataSource);
     }
 }
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::InitSoundBuffers()
-// Desc: Loads the 30 WAVs out of th07.dat and builds the per-sound-index
-//       table that used to be 38 premade DirectSound duplicate buffers.
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0044c7d0
 ZunResult SoundPlayer::InitSoundBuffers()
 {
     i32 i;
 
-    if (!this->manager)
+    if (!this->engine)
     {
         return ZUN_ERROR;
     }
@@ -601,63 +713,43 @@ ZunResult SoundPlayer::InitSoundBuffers()
     {
         if (LoadSound(i, g_SFXList[i]) != ZUN_SUCCESS)
         {
-            g_GameErrorContext.Log(TH_ERR_SOUND_READ_FAIL, g_SFXList[i]);
+            g_GameErrorContext.Log("error : Sound ファイルが読み込めない データを確認 %s\n",
+                                   g_SFXList[i]);
             return ZUN_ERROR;
         }
     }
-    for (i = 0; i < ARRAY_SIZE_SIGNED(SOUND_BUFFER_IDX_VOL); i++)
+    for (i = 0; i < ARRAY_SIZE(SOUND_BUFFER_IDX_VOL); i++)
     {
-        SAFE_DELETE(this->duplicateSoundBuffers[i]);
-        this->duplicateSoundBuffers[i] =
-            new SoundBufferIdxVolume(SOUND_BUFFER_IDX_VOL[i]);
-        this->ApplySoundVolume(i);
+        i32 bufIdx = SOUND_BUFFER_IDX_VOL[i].bufferIdx;
+
+        this->duplicateSfxData[i] = new ma_audio_buffer;
+        ma_audio_buffer_config bufCfg = ma_audio_buffer_config_init(
+            ma_format_f32, 2, this->sfxFrameCount[bufIdx], this->sfxPCMData[bufIdx], NULL);
+        ma_audio_buffer_init(&bufCfg, this->duplicateSfxData[i]);
+
+        this->soundBuffers[i] = new ma_sound;
+        if (ma_sound_init_from_data_source(this->engine,
+                                           (ma_data_source *)this->duplicateSfxData[i], 0, NULL,
+                                           this->soundBuffers[i]) != MA_SUCCESS)
+        {
+            return ZUN_ERROR;
+        }
+
+        ma_sound_seek_to_pcm_frame(this->soundBuffers[i], 0);
+        ma_sound_set_volume(this->soundBuffers[i],
+                            ma_volume_db_to_linear(SOUND_BUFFER_IDX_VOL[i].volume / 100.0f));
     }
     return ZUN_SUCCESS;
 }
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::ApplySoundVolume()
-// Desc: Pushes SOUND_BUFFER_IDX_VOL[idx]'s level onto the CSound it refers to.
-//-----------------------------------------------------------------------------
-void SoundPlayer::ApplySoundVolume(i32 idx)
+void SoundPlayer::PlaySoundByIdx(i32 idx, u32 param_2)
 {
-    SoundBufferIdxVolume *settings;
-    i32 bufferIdx;
+    (void)param_2;
 
-    if (idx < 0 || idx >= ARRAY_SIZE_SIGNED(this->duplicateSoundBuffers))
-    {
-        return;
-    }
-
-    settings = this->duplicateSoundBuffers[idx];
-    if (!settings)
-    {
-        return;
-    }
-
-    bufferIdx = settings->bufferIdx;
-    if (bufferIdx < 0 || bufferIdx >= ARRAY_SIZE_SIGNED(this->sounds))
-    {
-        return;
-    }
-    if (this->sounds[bufferIdx])
-    {
-        this->sounds[bufferIdx]->SetVolume((i32)settings->volume);
-    }
-}
-
-// FUNCTION: TH07 0x0044c930
-void SoundPlayer::PlaySoundByIdx(i32 idx, u32 unused)
-{
-    i32 unk;
+    i32 iVar1;
     i32 i;
 
-    if (idx < 0 || idx >= ARRAY_SIZE_SIGNED(SOUND_BUFFER_IDX_VOL))
-    {
-        return;
-    }
-
-    unk = SOUND_BUFFER_IDX_VOL[idx].field2_0x6;
+    iVar1 = SOUND_BUFFER_IDX_VOL[idx].field2_0x6;
     for (i = 0; i < ARRAY_SIZE_SIGNED(this->soundQueue); i++)
     {
         if (this->soundQueue[i] < 0)
@@ -670,29 +762,24 @@ void SoundPlayer::PlaySoundByIdx(i32 idx, u32 unused)
             return;
         }
     }
-    if (i >= ARRAY_SIZE_SIGNED(this->soundQueue))
+    if (i >= 5)
     {
         return;
     }
 
     this->soundQueue[i] = idx;
-    this->unusedSoundVolRelated[idx] = unk;
+    this->unusedSoundVolRelated[idx] = iVar1;
 }
 
-// FUNCTION: TH07 0x0044c9c0
 i32 SoundPlayer::ProcessQueues()
 {
-    SoundBufferIdxVolume *settings;
-    SoundPlayerCommand *commandCursor;
-    ThBgmFormat *format;
-    i32 bufferIdx;
     char (*name)[256];
     i32 curSound;
-    i32 fmtIdx;
+    SoundPlayerCommand *commandCursor;
     i32 i;
     u32 loopAgain;
 
-    if (!this->manager)
+    if (!this->engine)
     {
         return 0;
     }
@@ -705,8 +792,7 @@ loop:
     case AUDIO_PRELOAD:
         if (g_Supervisor.cfg.preloadBgm)
         {
-            // STRING: TH07 0x00495e60
-            utils::DebugPrint("Sound : PreLoad Stage\r\n");
+            Supervisor::DebugPrint("Sound : PreLoad Stage\n");
             if (!commandCursor->arg2)
             {
                 StopBGM();
@@ -717,7 +803,7 @@ loop:
         }
         else
         {
-            utils::DebugPrint("Sound : PreLoad Stage\r\n");
+            Supervisor::DebugPrint("Sound : PreLoad Stage\n");
             PreloadBGM(commandCursor->arg1, commandCursor->string);
             loopAgain = true;
             break;
@@ -729,8 +815,7 @@ loop:
         {
             if (!commandCursor->arg2)
             {
-                // STRING: TH07 0x00495e48
-                utils::DebugPrint("Sound : Load Stage\r\n");
+                Supervisor::DebugPrint("Sound : Load Stage\n");
                 if (LoadBGM(commandCursor->arg1) != ZUN_SUCCESS)
                 {
                     break;
@@ -738,11 +823,10 @@ loop:
             }
             else if (commandCursor->arg2 == 2)
             {
-                // STRING: TH07 0x00495e30
-                utils::DebugPrint("Sound : Reset Stage\r\n");
+                Supervisor::DebugPrint("Sound : Reset Stage\n");
                 if (this->backgroundMusic)
                 {
-                    if (FAILED(this->backgroundMusic->Reset()))
+                    if (ma_sound_seek_to_pcm_frame(this->backgroundMusic, 0) != MA_SUCCESS)
                     {
                         break;
                     }
@@ -750,21 +834,14 @@ loop:
             }
             else if (commandCursor->arg2 == 5)
             {
-                // The DirectSound version prefilled the ring buffer here. SDL
-                // streams pull their data on demand (the BGM thread's job) and
-                // the track length is what decides whether the BGM loops.
-                utils::DebugPrint("Sound : Fill Buffer Stage\r\n");
-                format = this->backgroundMusic
-                             ? this->backgroundMusic->GetWaveFile()->GetFormat()
-                             : NULL;
-                commandCursor->arg1 = format && format->totalLength != 0;
+                Supervisor::DebugPrint("Sound : Fill Buffer Stage\n");
             }
             else if (commandCursor->arg2 == 7)
             {
-                utils::DebugPrint("Sound : Play Stage\r\n");
+                Supervisor::DebugPrint("Sound : Play Stage\n");
                 if (this->backgroundMusic)
                 {
-                    this->backgroundMusic->Play(0, SDLSND_PLAY_LOOPING);
+                    ma_sound_start(this->backgroundMusic);
                 }
             }
             else if (commandCursor->arg2 >= 20)
@@ -772,53 +849,30 @@ loop:
                 break;
             }
         }
-        else if (!this->backgroundMusic)
-        {
-            break;
-        }
         else if (!commandCursor->arg2)
         {
-            // STRING: TH07 0x00495de4
-            utils::DebugPrint("Sound : Stop Stage\r\n");
-            this->backgroundMusic->Stop();
+            Supervisor::DebugPrint("Sound : Stop Stage\n");
+            ma_sound_stop(this->backgroundMusic);
         }
         else if (commandCursor->arg2 == 1)
         {
-            if (this->backgroundMusic->m_bIsLocked)
-            {
-                goto loop_breakout;
-            }
-            // STRING: TH07 0x00495dc8
-            utils::DebugPrint("Sound : Recreate Stage\r\n");
-            this->backgroundMusic->InitSoundBuffers();
+            Supervisor::DebugPrint("Sound : Recreate Stage\n");
         }
         else if (commandCursor->arg2 == 2)
         {
-            // STRING: TH07 0x00495db0
-            utils::DebugPrint("Sound : ReOpen Stage\r\n");
-            name = commandCursor->arg1 >= 0
-                       ? &this->bgmFileNames[commandCursor->arg1]
-                       : &commandCursor->string;
+            Supervisor::DebugPrint("Sound : ReOpen Stage\n");
+            name = commandCursor->arg1 >= 0 ? &this->bgmFileNames[commandCursor->arg1]
+                                            : &commandCursor->string;
             ReopenBGM(*name);
         }
         else if (commandCursor->arg2 == 3)
         {
-            // STRING: TH07 0x00495e14
-            utils::DebugPrint("Sound : Fill Buffer Stage\r\n");
-            this->backgroundMusic->Reset();
-            if (!this->backgroundMusic->GetWaveFile()->GetFormat())
-            {
-                break;
-            }
-            commandCursor->arg1 = this->backgroundMusic->GetWaveFile()
-                                      ->GetFormat()
-                                      ->totalLength != 0;
+            Supervisor::DebugPrint("Sound : Fill Buffer Stage\n");
         }
         else if (commandCursor->arg2 == 4)
         {
-            // STRING: TH07 0x00495dfc
-            utils::DebugPrint("Sound : Play Stage\r\n");
-            this->backgroundMusic->Play(0, SDLSND_PLAY_LOOPING);
+            Supervisor::DebugPrint("Sound : Play Stage\n");
+            ma_sound_start(this->backgroundMusic);
         }
         else if (commandCursor->arg2 >= 7)
         {
@@ -834,53 +888,20 @@ loop:
 
         if (!commandCursor->arg2)
         {
-            utils::DebugPrint("Sound : Stop Stage\r\n");
-            this->backgroundMusic->Stop();
+            Supervisor::DebugPrint("Sound : Stop Stage\n");
+            ma_sound_stop(this->backgroundMusic);
         }
         else if (commandCursor->arg2 == 1)
         {
-            // STRING: TH07 0x00495d94
-            utils::DebugPrint("Sound : Thread Stop Stage\r\n");
-            if (!this->backgroundMusicThreadHandle)
-            {
-                break;
-            }
-            PostThreadMessageA(this->backgroundMusicThreadId, WM_QUIT, 0, 0);
+            Supervisor::DebugPrint("Sound : Thread Stop Stage\n");
         }
         else if (commandCursor->arg2 == 2)
         {
-            if (this->backgroundMusicThreadHandle &&
-                WaitForSingleObject(this->backgroundMusicThreadHandle, 256))
-            {
-                // STRING: TH07 0x00495d70
-                utils::DebugPrint("Sound : Thread Stop Wait Stage\r\n");
-                PostThreadMessageA(this->backgroundMusicThreadId, WM_QUIT, 0, 0);
-                commandCursor->arg2--;
-            }
-            else
-            {
-                this->backgroundMusicThreadHandle = NULL;
-            }
         }
         else if (commandCursor->arg2 == 3)
         {
-            // STRING: TH07 0x00495d50
-            utils::DebugPrint("Sound : Handle Close Stage\r\n");
-            if (this->backgroundMusicThreadHandle)
-            {
-                CloseHandle(this->backgroundMusicThreadHandle);
-                this->backgroundMusicThreadHandle = NULL;
-            }
-            if (this->backgroundMusicUpdateEvent)
-            {
-                CloseHandle(this->backgroundMusicUpdateEvent);
-                this->backgroundMusicUpdateEvent = NULL;
-            }
-
-            if (this->backgroundMusic)
-            {
-                ZUN_DELETE(this->backgroundMusic);
-            }
+            Supervisor::DebugPrint("Sound : Handle Close Stage\n");
+            StopBGM();
         }
         else if (commandCursor->arg2 == 10)
         {
@@ -896,8 +917,8 @@ loop:
 
         if (!commandCursor->arg2)
         {
-            utils::DebugPrint("Sound : Stop Stage\r\n");
-            this->backgroundMusic->Stop();
+            Supervisor::DebugPrint("Sound : Stop Stage\n");
+            ma_sound_stop(this->backgroundMusic);
         }
         else if (commandCursor->arg2 == 1)
         {
@@ -906,39 +927,26 @@ loop:
         commandCursor->arg2++;
         goto loop_breakout;
     case AUDIO_FADEOUT: {
-        // STRING: TH07 0x00495d34
-        utils::DebugPrint("Sound : Fade Out Stage %d\r\n", commandCursor->arg1);
-        g_SoundPlayer.FadeOut((f32)commandCursor->arg1);
+        Supervisor::DebugPrint("Sound : Fade Out Stage %d\n", commandCursor->arg1);
+        g_SoundPlayer.FadeOut(commandCursor->arg1);
         break;
     }
     case AUDIO_PAUSE:
         if (g_Supervisor.cfg.musicMode == MUSIC_WAV)
         {
-            if (!this->backgroundMusic)
+            if (this->backgroundMusic)
             {
-                break;
+                ma_sound_stop(this->backgroundMusic);
             }
-            if (this->backgroundMusic->m_bIsLocked)
-            {
-                // STRING: TH07 0x00495d2c
-                utils::DebugPrint("locked\n");
-                goto loop_breakout;
-            }
-            this->backgroundMusic->Pause();
         }
         break;
     case AUDIO_UNPAUSE:
         if (g_Supervisor.cfg.musicMode == MUSIC_WAV)
         {
-            if (!this->backgroundMusic)
+            if (this->backgroundMusic)
             {
-                break;
+                ma_sound_start(this->backgroundMusic);
             }
-            if (this->backgroundMusic->m_bIsLocked)
-            {
-                goto loop_breakout;
-            }
-            this->backgroundMusic->Unpause();
         }
         break;
     default:
@@ -959,122 +967,37 @@ loop:
     }
 
 loop_breakout:
-    if (this->backgroundMusic && this->backgroundMusic->m_dwIsFadingOut)
-    {
-        this->backgroundMusic->UpdateFadeOut();
-    }
-
     if (!g_Supervisor.cfg.playSounds)
     {
         return this->commandQueue[0].opcode;
     }
-
-    // Start the queued effects. SDL mixes them: each one owns a stream, so a
-    // sound that is still playing is not restarted or cut off (the old
-    // duplicate-buffer scheme stopped and rewound a shared buffer instead).
-    for (i = 0; i < ARRAY_SIZE_SIGNED(this->soundQueue); i++)
+    else
     {
-        if (this->soundQueue[i] < 0)
+        for (i = 0; i < ARRAY_SIZE_SIGNED(this->soundQueue); i++)
         {
-            break;
-        }
+            if (this->soundQueue[i] < 0)
+            {
+                break;
+            }
 
-        curSound = this->soundQueue[i];
-        this->soundQueue[i] = -1;
-        settings = this->duplicateSoundBuffers[curSound];
-        if (!settings)
-        {
-            continue;
-        }
+            curSound = this->soundQueue[i];
+            this->soundQueue[i] = -1;
+            if (!this->soundBuffers[curSound])
+            {
+                continue;
+            }
 
-        bufferIdx = settings->bufferIdx;
-        if (bufferIdx < 0 || bufferIdx >= ARRAY_SIZE_SIGNED(this->sounds) ||
-            !this->sounds[bufferIdx])
-        {
-            continue;
+            ma_sound_stop(this->soundBuffers[curSound]);
+            ma_sound_seek_to_pcm_frame(this->soundBuffers[curSound], 0);
+            ma_sound_start(this->soundBuffers[curSound]);
         }
-
-        this->ApplySoundVolume(curSound);
-        this->sounds[bufferIdx]->Play(0, SDLSND_PLAY_ONCE);
+        return this->commandQueue[0].opcode;
     }
-    return this->commandQueue[0].opcode;
 }
 
-//-----------------------------------------------------------------------------
-// Name: SoundPlayer::BackgroundMusicPlayerThread()
-// Desc: Feeds the BGM stream from the archive. This is the original's
-//       DirectSound notification thread, retargeted at SDL: instead of waking
-//       on position notifications it wakes every tick, pushes the next chunk,
-//       and still receives the WM_QUIT that stops it.
-//-----------------------------------------------------------------------------
-// FUNCTION: TH07 0x0044d200
-DWORD __stdcall SoundPlayer::BackgroundMusicPlayerThread(LPVOID lpThreadParameter)
-{
-    ZunBool stopped;
-    ZunBool looped;
-    DWORD waitObj;
-    LPVOID lpThreadParameterCopy;
-    MSG msg;
-    HRESULT hr;
-
-    lpThreadParameterCopy = lpThreadParameter;
-    stopped = FALSE;
-    looped = TRUE;
-    while (!stopped)
-    {
-        waitObj = MsgWaitForMultipleObjects(
-            1, &g_SoundPlayer.backgroundMusicUpdateEvent, 0, 0x10,
-            QS_HOTKEY | QS_PAINT | QS_TIMER | QS_POSTMESSAGE |
-                QS_MOUSEBUTTON | QS_MOUSEMOVE | QS_KEY);
-        if (!g_SoundPlayer.backgroundMusic)
-        {
-            stopped = TRUE;
-        }
-
-        switch (waitObj)
-        {
-        case 0:
-            break;
-        case 1:
-            while (PeekMessageA(&msg, NULL, 0, 0, 1))
-            {
-                if (msg.message == WM_QUIT)
-                {
-                    stopped = TRUE;
-                }
-            }
-            break;
-        default:
-            // Timeout, or the posted message is not a thread message yet.
-            break;
-        }
-
-        // The caller polls this flag around the buffer work, exactly like the
-        // original guarded its notification handler.
-        if (g_SoundPlayer.backgroundMusic)
-        {
-            g_SoundPlayer.backgroundMusic->m_bIsLocked = TRUE;
-            if (g_SoundPlayer.backgroundMusic->m_bIsPlaying)
-            {
-                hr = g_SoundPlayer.backgroundMusic->HandleWaveStreamNotification(looped);
-                (void)hr;
-            }
-        }
-        if (g_SoundPlayer.backgroundMusic)
-        {
-            g_SoundPlayer.backgroundMusic->m_bIsLocked = FALSE;
-        }
-    }
-    utils::DebugPrint(TH_LOG_BGM_THREAD_EXIT);
-    return 0;
-}
-
-// FUNCTION: TH07 0x0044d2f0
 void SoundPlayer::PushCommand(AudioOpcode opcode, i32 arg1, const char *arg2)
 {
-    i32 i;
-
-    for (i = 0; i < MAX_SOUND_COMMANDS; i++)
+    for (i32 i = 0; i < MAX_SOUND_COMMANDS; i++)
     {
         if (this->commandQueue[i].opcode != 0)
         {
@@ -1083,13 +1006,10 @@ void SoundPlayer::PushCommand(AudioOpcode opcode, i32 arg1, const char *arg2)
 
         this->commandQueue[i].opcode = opcode;
         this->commandQueue[i].arg1 = arg1;
-        strncpy(this->commandQueue[i].string, arg2,
-                sizeof(this->commandQueue[i].string) - 1);
-        this->commandQueue[i].string[sizeof(this->commandQueue[i].string) - 1] = '\0';
+        strcpy(this->commandQueue[i].string, arg2);
         this->commandQueue[i].arg2 = 0;
 
         break;
     }
-    // STRING: TH07 0x00495ce0
-    utils::DebugPrint("Sound Que Add %d\r\n", opcode);
+    Supervisor::DebugPrint("Sound Que Add %d\n", opcode);
 }

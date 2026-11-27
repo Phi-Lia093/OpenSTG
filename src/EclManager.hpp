@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Supervisor.hpp"
 #include "ZunResult.hpp"
+#include "ZunTimer.hpp"
 #include "inttypes.hpp"
 #include "utils.hpp"
 
@@ -273,21 +273,15 @@ enum EclOpcode
 typedef void (*EclExInstr)(struct Enemy *, struct EclRawInstr *);
 typedef void (*EclInterpFn)(struct Enemy *, struct EclInterp *, f32 t);
 
-#pragma warning(disable : 4200)
 struct EclRawHeader
 {
     i16 subCount;
     i16 timelineCount;
-    struct EclTimelineInstr *timelinePtr[16];
-    EclRawInstr *subTable[];
-
-    EclTimelineInstr *GetTimeline(i32 idx)
-    {
-        return this->timelinePtr[idx];
-    }
+    u32 timelineOffsets[16];
+    u32 subTableOffsets[];
 };
+static_assert(sizeof(EclRawHeader) == 0x44);
 
-#pragma warning(disable : 4200)
 struct EclRawInstr
 {
     u32 time;
@@ -303,16 +297,18 @@ struct EclRawInstr
         return this->args[1];
     }
 };
+static_assert(sizeof(EclRawInstr) == 0xc);
 
 struct EclTimelineInstrArgs
 {
     AnyArg args[6];
 
-    Float3 *AsVec()
+    ZunVec3 *AsVec()
     {
-        return (Float3 *)&this->args;
+        return (ZunVec3 *)&this->args;
     }
 };
+static_assert(sizeof(EclTimelineInstrArgs) == 0x18);
 
 struct EclTimelineInstr
 {
@@ -322,6 +318,7 @@ struct EclTimelineInstr
     i16 size;
     EclTimelineInstrArgs args;
 };
+static_assert(sizeof(EclTimelineInstr) == 0x20);
 
 struct EclTimeline
 {
@@ -334,7 +331,7 @@ struct EclGlobalVars
     i32 intVars[4];
     f32 floatVars[4];
 };
-C_ASSERT(sizeof(EclGlobalVars) == 0x20);
+
 extern EclGlobalVars g_GlobalEclVars;
 
 struct EclContextArgs
@@ -345,7 +342,6 @@ struct EclContextArgs
     f32 floatVars2[2];
     EclGlobalVars globalVars;
 };
-C_ASSERT(sizeof(EclContextArgs) == 0x68);
 
 struct EclInterp
 {
@@ -359,44 +355,25 @@ struct EclManager
     ZunResult Load(const char *path);
     void Unload();
     ZunResult CallEclSub(struct EnemyEclContext *ctx, i16 subId);
-    static i32 *GetVar(Enemy *enemy, i32 *eclVarId, u16 paramMask, i32 idx);
+    static i32 *GetVar(Enemy *enemy, i32 *eclVarId, u16 paramMask, i32 param_4);
     static i32 GetVarValue(Enemy *enemy, i32 eclVarId);
-    static f32 *GetFloatVar(Enemy *enemy, f32 *eclVarFloat, u16 paramMask,
-                            i32 idx);
+    static f32 *GetFloatVar(Enemy *enemy, f32 *eclVarFloat, u16 paramMask, i32 param_4);
     static f32 GetFloatVarValue(Enemy *enemy, f32 eclVarFloat);
     static void MoveDirTime(Enemy *enemy, EclRawInstr *instr);
     static void MovePosTime(Enemy *enemy, EclRawInstr *instr);
     static void MathLerp(Enemy *enemy, EclInterp *interp, f32 t);
     static void MathCubicInterp(Enemy *enemy, EclInterp *interp, f32 t);
     static void BeginSpellcard(Enemy *enemy, EclRawInstr *instr);
-    static void EndSpellcard(Enemy *enemy, EclRawInstr *instr);
+    static void EndSpellcard();
     ZunResult RunEcl(Enemy *enemy);
 
-    i32 GetFirstIntValue(EclRawInstr *instr, Enemy *enemy)
-    {
-        if ((instr->paramMask & 1) != 0)
-        {
-            return GetVarValue(enemy, instr->args[0].i);
-        }
-        else
-        {
-            return instr->args[0].i;
-        }
-    }
-
-    i32 GetFourthIntValue(EclRawInstr *instr, Enemy *enemy)
-    {
-        if ((instr->paramMask & 8) != 0)
-        {
-            return GetVarValue(enemy, instr->args[3].i);
-        }
-        else
-        {
-            return instr->args[3].i;
-        }
-    }
-
     EclRawHeader *eclFile;
+    EclTimelineInstr *timelinePtr[16];
     EclRawInstr **subTable;
+
+    EclTimelineInstr *GetTimeline(i32 idx)
+    {
+        return this->timelinePtr[idx];
+    }
 };
 extern EclManager g_EclManager;

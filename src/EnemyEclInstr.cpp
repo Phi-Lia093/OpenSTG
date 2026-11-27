@@ -1,17 +1,17 @@
 #include "EnemyEclInstr.hpp"
 
+#include "AnmIdx.hpp"
 #include "BulletManager.hpp"
 #include "EnemyManager.hpp"
 #include "GameManager.hpp"
-#include "Global.hpp"
 #include "Player.hpp"
+#include "Rng.hpp"
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
 #include "ZunMath.hpp"
 #include "utils.hpp"
 
-// GLOBAL: TH07 0x0049f158
 EclExInstr g_EclExInstr[24] = {
     EnemyEclInstr::ExInsSetPosToBoss,
     EnemyEclInstr::ExInsAliceCurveBullets,
@@ -39,19 +39,11 @@ EclExInstr g_EclExInstr[24] = {
     EnemyEclInstr::ExInsSpawnBulletsWithDirChange2,
 };
 
-// GLOBAL: TH07 0x0049f3ec
 EclInterpFn g_EclInterpFuncs[8] = {
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathLerp,
-    EclManager::MathCubicInterp,
+    EclManager::MathLerp, EclManager::MathLerp, EclManager::MathLerp, EclManager::MathLerp,
+    EclManager::MathLerp, EclManager::MathLerp, EclManager::MathLerp, EclManager::MathCubicInterp,
 };
 
-// FUNCTION: TH07 0x00417b90
 void EnemyEclInstr::ExInsSetPosToBoss(Enemy *enemy, EclRawInstr *instr)
 {
     i32 bossIdx = instr->args[1].i;
@@ -61,10 +53,10 @@ void EnemyEclInstr::ExInsSetPosToBoss(Enemy *enemy, EclRawInstr *instr)
     enemy->disableMovement = 1;
 }
 
-#pragma var_order(i, bullet, angle)
-// FUNCTION: TH07 0x00417c30
 void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+
     f32 angle;
     Bullet *bullet;
     i32 i;
@@ -109,7 +101,7 @@ void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
             }
             bullet->speed = 0.3f;
             memset(bullet->commands, 0, sizeof(bullet->commands));
-            if (g_GameManager.difficulty < DIFF_LUNATIC)
+            if (g_GameManager.difficulty < 3)
             {
                 bullet->AddAngleAccelCommand(0, 0, 60, angle, 1.0f / 60.0f);
             }
@@ -122,10 +114,7 @@ void EnemyEclInstr::ExInsAliceCurveBullets(Enemy *enemy, EclRawInstr *instr)
     }
 }
 
-#pragma var_order(bulletProps, i, maxDistance, distance, bullet)
-// FUNCTION: TH07 0x00417e50
-void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy,
-                                                     EclRawInstr *instr)
+void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy, EclRawInstr *instr)
 {
     Bullet *bullet = g_BulletManager.bullets;
     f32 distance;
@@ -151,19 +140,15 @@ void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy,
     }
     for (i = 0; i < MAX_BULLETS; i++, bullet++)
     {
-        if (bullet->state == BULLET_INACTIVE ||
-            bullet->state == BULLET_DESPAWN)
+        if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
             continue;
         }
 
-        if (bullet->sprites.spriteBullet.sprite &&
-            bullet->spriteOffset == 2)
+        if (bullet->sprites.spriteBullet.sprite && bullet->spriteOffset == 2)
         {
-            distance = sqrtf((enemy->pos.x - bullet->pos.x) *
-                                 (enemy->pos.x - bullet->pos.x) +
-                             (enemy->pos.y - bullet->pos.y) *
-                                 (enemy->pos.y - bullet->pos.y));
+            distance = sqrtf((enemy->pos.x - bullet->pos.x) * (enemy->pos.x - bullet->pos.x) +
+                             (enemy->pos.y - bullet->pos.y) * (enemy->pos.y - bullet->pos.y));
             if (distance < maxDistance)
             {
                 bulletProps.pos = bullet->pos;
@@ -177,8 +162,7 @@ void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy,
                 bulletProps.flags = 2;
                 bulletProps.aimMode = 6;
                 bulletProps.AddTargetVelocityCommand(
-                    0, 0, 180, g_Rng.GetRandomFloatInRange(0.005f) + 0.013f,
-                    ZUN_PI / 2.0f);
+                    0, 0, 180, g_Rng.GetRandomFloatInRange(0.005f) + 0.013f, ZUN_PI / 2.0f);
                 g_BulletManager.SpawnBulletPattern(&bulletProps);
                 bullet->Initialize();
             }
@@ -186,28 +170,24 @@ void EnemyEclInstr::ExInsTurnBulletsIntoOtherBullets(Enemy *enemy,
     }
 }
 
-// FUNCTION: TH07 0x00418110
 void EnemyEclInstr::ExInsNoOp(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+    (void)instr;
 }
 
-#pragma var_order(bulletProps, i, bullet)
-// FUNCTION: TH07 0x00418120
-void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy,
-                                                      EclRawInstr *instr)
+void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet = g_BulletManager.bullets;
     i32 i;
     EnemyBulletShooter bulletProps;
 
-    // ZUN bloat: Ok
-    instr->GetSecondArg();
-
     enemy->currentContext.eclContextArgs.floatVars1[0] = -999.0f;
     for (i = 0; i < MAX_BULLETS; i++, bullet++)
     {
-        if (bullet->state == BULLET_INACTIVE ||
-            bullet->state == BULLET_DESPAWN)
+        if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
             continue;
         }
@@ -223,33 +203,27 @@ void EnemyEclInstr::ExInsDespawnLargeBulletAndSavePos(Enemy *enemy,
     }
 }
 
-// FUNCTION: TH07 0x00418260
 void EnemyEclInstr::ExInsCopyMainBossMovement(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Enemy *boss = g_EnemyManager.bosses[0];
     enemy->moveInterpStartPos = boss->pos;
     enemy->orbitRadius = boss->orbitRadius;
     enemy->orbitAngleVel = boss->orbitAngleVel;
-
-    // ZUN bloat: what??????????????????
-    switch (boss->currentContext.eclContextArgs.intVars2[0])
-    {
-    }
 }
 
-#pragma var_order(bulletProps, i, bullet)
-// FUNCTION: TH07 0x004182d0
-void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy,
-                                                      EclRawInstr *instr)
+void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+
     Bullet *bullet = g_BulletManager.bullets;
     i32 i;
     EnemyBulletShooter bulletProps;
 
     for (i = 0; i < MAX_BULLETS; i++, bullet++)
     {
-        if (bullet->state == BULLET_INACTIVE ||
-            bullet->state == BULLET_DESPAWN)
+        if (bullet->state == BULLET_INACTIVE || bullet->state == BULLET_DESPAWN)
         {
             continue;
         }
@@ -262,10 +236,10 @@ void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy,
             bulletProps.pos = bullet->pos;
             bulletProps.sprite = 6;
             bulletProps.spriteOffset = 15;
-            bulletProps.angle1 = AddNormalizeAngle(bullet->angle, ZUN_PI);
+            bulletProps.angle1 = utils::AddNormalizeAngle(bullet->angle, ZUN_PI);
             bulletProps.angle2 = ZUN_PI / 6.0f;
             bulletProps.speed1 = bullet->speed * 1.1f;
-            if (g_GameManager.difficulty < DIFF_LUNATIC)
+            if (g_GameManager.difficulty < 3)
             {
                 bulletProps.count1 = 4;
             }
@@ -331,15 +305,12 @@ void EnemyEclInstr::ExInsSplitBulletsOrShootBackwards(Enemy *enemy,
     }
 }
 
-#pragma var_order(p, rot, d)
-// FUNCTION: TH07 0x004185d0
-ZunBool IsPointInRotatedRect(Float3 *point, Float3 *center,
-                             Float3 *size, Float3 *pivot,
+ZunBool IsPointInRotatedRect(ZunVec3 *point, ZunVec3 *center, ZunVec3 *size, ZunVec3 *pivot,
                              f32 sine, f32 cosine)
 {
-    Float3 d;
-    Float3 rot;
-    Float3 p;
+    ZunVec3 d;
+    ZunVec3 rot;
+    ZunVec3 p;
 
     d = *point - *pivot;
 
@@ -352,8 +323,7 @@ ZunBool IsPointInRotatedRect(Float3 *point, Float3 *center,
 
     rot = *center + *size / 2.0f;
 
-    if (p.x > rot.x || p.x < d.x ||
-        p.y > rot.y || p.y < d.y)
+    if (p.x > rot.x || p.x < d.x || p.y > rot.y || p.y < d.y)
     {
         return FALSE;
     }
@@ -361,17 +331,16 @@ ZunBool IsPointInRotatedRect(Float3 *point, Float3 *center,
     return TRUE;
 }
 
-#pragma var_order(j, sine, dot, size, bullet, laser, i, cosine, center)
-// FUNCTION: TH07 0x00418880
-void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy,
-                                                  EclRawInstr *instr)
+void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy, EclRawInstr *instr)
 {
-    Float3 center;
+    (void)instr;
+
+    ZunVec3 center;
     f32 cosine;
     i32 i;
     Laser *laser;
     Bullet *bullet;
-    Float3 size;
+    ZunVec3 size;
     f32 dot;
     f32 sine;
     i32 j;
@@ -393,8 +362,8 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy,
         {
             size.y = laser->width;
             size.x = laser->endOffset - laser->startOffset;
-            center.x = (laser->endOffset - laser->startOffset) / 2.0f +
-                       laser->startOffset + laser->pos.x;
+            center.x =
+                (laser->endOffset - laser->startOffset) / 2.0f + laser->startOffset + laser->pos.x;
             center.y = laser->pos.y;
             sincosf(&sine, &cosine, laser->angle);
             bullet = g_BulletManager.bullets;
@@ -406,8 +375,7 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy,
                 }
 
                 if (bullet->sprites.spriteBullet.sprite &&
-                    IsPointInRotatedRect(&bullet->pos, &center, &size,
-                                         &laser->pos, sine, cosine))
+                    IsPointInRotatedRect(&bullet->pos, &center, &size, &laser->pos, sine, cosine))
                 {
                     if (bullet->state2 > 0)
                     {
@@ -420,27 +388,23 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy,
                         {
                             bullet->speed = bullet->speed - 0.1f;
                         }
-                        dot =
-                            cosine * bullet->velocity.y + sine * bullet->velocity.x;
+                        dot = cosine * bullet->velocity.y + sine * bullet->velocity.x;
                         if (dot >= 0.0f)
                         {
-                            bullet->angle =
-                                AddNormalizeAngle(laser->angle, ZUN_PI / 2.0f);
+                            bullet->angle = utils::AddNormalizeAngle(laser->angle, ZUN_PI / 2.0f);
                         }
                         else
                         {
-                            bullet->angle =
-                                AddNormalizeAngle(laser->angle, -ZUN_PI / 2.0f);
+                            bullet->angle = utils::AddNormalizeAngle(laser->angle, -ZUN_PI / 2.0f);
                         }
-                        bullet->velocity.FromAngleMagnitude(bullet->angle,
-                                                            g_Supervisor.effectiveFramerateMultiplier *
-                                                                bullet->speed);
+                        bullet->velocity.FromAngleMagnitude(
+                            bullet->angle,
+                            g_Supervisor.effectiveFramerateMultiplier * bullet->speed);
                         bullet->state2 = 10;
                         bullet->sprites = g_BulletManager.bulletTypeTemplates[5];
-                        g_AnmManager->SetActiveSprite(
-                            &bullet->sprites.spriteBullet,
-                            bullet->sprites.spriteBullet.activeSpriteIdx +
-                                bullet->spriteOffset);
+                        g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
+                                                      bullet->sprites.spriteBullet.activeSpriteIdx +
+                                                          bullet->spriteOffset);
                     }
                 }
             }
@@ -448,19 +412,17 @@ void EnemyEclInstr::ExInsReflectBulletsFromLasers(Enemy *enemy,
     }
 }
 
-#pragma var_order(dirY, j, sine, dot, size, bullet, dirX, laser, i, \
-                  cosine, center)
-// FUNCTION: TH07 0x00418b40
-void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
-                                                EclRawInstr *instr)
+void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy, EclRawInstr *instr)
 {
-    Float3 center;
+    (void)instr;
+
+    ZunVec3 center;
     f32 cosine;
     i32 i;
     Laser *laser;
     f32 dirX;
     Bullet *bullet;
-    Float3 size;
+    ZunVec3 size;
     f32 dot;
     f32 sine;
     i32 j;
@@ -474,7 +436,7 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
             continue;
         }
 
-        if (enemy->timer % 3 != i % 3)
+        if (i % 3 != enemy->timer.current % 3)
         {
             continue;
         }
@@ -483,8 +445,8 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
         {
             size.y = laser->width * 1.5f;
             size.x = laser->endOffset - laser->startOffset;
-            center.x = (laser->endOffset - laser->startOffset) / 2.0f +
-                       laser->startOffset + laser->pos.x;
+            center.x =
+                (laser->endOffset - laser->startOffset) / 2.0f + laser->startOffset + laser->pos.x;
             center.y = laser->pos.y;
             sincosf(&sine, &cosine, laser->angle);
             dirX = -sine;
@@ -497,23 +459,19 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
                     continue;
                 }
 
-                if (bullet->sprites.spriteBullet.sprite &&
-                    bullet->state2 != i + 1 && bullet->state2 >= 0 &&
-                    IsPointInRotatedRect(&bullet->pos, &center, &size,
-                                         &laser->pos, sine, cosine))
+                if (bullet->sprites.spriteBullet.sprite && bullet->state2 != i + 1 &&
+                    bullet->state2 >= 0 &&
+                    IsPointInRotatedRect(&bullet->pos, &center, &size, &laser->pos, sine, cosine))
                 {
-                    if (g_GameManager.difficulty < DIFF_HARD)
+                    if (g_GameManager.difficulty < 2)
                     {
-                        bullet->speed *=
-                            g_Rng.GetRandomFloatInRange(0.3f) + 0.7f;
+                        bullet->speed *= g_Rng.GetRandomFloatInRange(0.3f) + 0.7f;
                     }
                     else
                     {
-                        bullet->speed *=
-                            g_Rng.GetRandomFloatInRange(0.4f) + 0.8f;
+                        bullet->speed *= g_Rng.GetRandomFloatInRange(0.4f) + 0.8f;
                     }
-                    dot =
-                        dirX * bullet->velocity.x + dirY * bullet->velocity.y;
+                    dot = dirX * bullet->velocity.x + dirY * bullet->velocity.y;
                     if (dot >= 0.0f)
                     {
                         bullet->velocity.x = dirX;
@@ -525,13 +483,12 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
                         bullet->velocity.y = -dirY;
                     }
                     bullet->sprites = g_BulletManager.bulletTypeTemplates[5];
-                    g_AnmManager->SetActiveSprite(
-                        &bullet->sprites.spriteBullet,
-                        bullet->sprites.spriteBullet.activeSpriteIdx +
-                            bullet->spriteOffset);
+                    g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
+                                                  bullet->sprites.spriteBullet.activeSpriteIdx +
+                                                      bullet->spriteOffset);
                     bullet->angle = atan2f(bullet->velocity.y, bullet->velocity.x);
                     bullet->velocity.FromAngleMagnitude(bullet->angle, bullet->speed);
-                    if (g_GameManager.difficulty < DIFF_HARD)
+                    if (g_GameManager.difficulty < 2)
                     {
                         bullet->state2 = -1;
                     }
@@ -545,16 +502,19 @@ void EnemyEclInstr::ExInsShootBulletsAlongLaser(Enemy *enemy,
     }
 }
 
-// FUNCTION: TH07 0x00418e80
 void EnemyEclInstr::ExInsEffect1eAccel(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+    (void)instr;
+
     ScreenEffect::RegisterChain(SCREEN_EFFECT_SHAKE, 80, 8, 0, 0);
     EffectManager::ModifyEffect1eAcceleration();
 }
 
-// FUNCTION: TH07 0x00418eb0
 void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+
     Bullet *bullet;
     i32 i;
 
@@ -570,20 +530,20 @@ void EnemyEclInstr::ExInsYoumuSetGameSpeed(Enemy *enemy, EclRawInstr *instr)
         }
 
         bullet->velocity *= g_Supervisor.effectiveFramerateMultiplier;
-        bullet->sprites.spriteBullet.baseSpriteIdx =
-            bullet->sprites.spriteBullet.activeSpriteIdx;
+        bullet->sprites.spriteBullet.baseSpriteIdx = bullet->sprites.spriteBullet.activeSpriteIdx;
         if (bullet->sprites.spriteBullet.activeSpriteIdx >= ANM_SPRITE_BULLETS_ARROWHEAD &&
             bullet->sprites.spriteBullet.activeSpriteIdx <= ANM_SPRITE_BULLETS_ARROWHEAD_WHITE)
         {
-            g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet, ANM_SPRITE_BULLETS_ARROWHEAD_WHITE);
+            g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
+                                          ANM_SPRITE_BULLETS_ARROWHEAD_WHITE);
         }
     }
 }
 
-#pragma var_order(i, fps, bullet)
-// FUNCTION: TH07 0x00418fc0
 void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+
     Bullet *bullet;
     f32 fps;
     i32 i;
@@ -601,9 +561,8 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
         if (bullet->sprites.spriteBullet.activeSpriteIdx >= ANM_SPRITE_BULLETS_ARROWHEAD &&
             bullet->sprites.spriteBullet.activeSpriteIdx <= ANM_SPRITE_BULLETS_ARROWHEAD_WHITE)
         {
-            g_AnmManager->SetActiveSprite(
-                &bullet->sprites.spriteBullet,
-                bullet->sprites.spriteBullet.baseSpriteIdx);
+            g_AnmManager->SetActiveSprite(&bullet->sprites.spriteBullet,
+                                          bullet->sprites.spriteBullet.baseSpriteIdx);
         }
     }
     g_Supervisor.effectiveFramerateMultiplier = 1.0f / (f32)instr->args[1].i;
@@ -616,8 +575,6 @@ void EnemyEclInstr::ExInsYoumuRestoreGameSpeed(Enemy *enemy, EclRawInstr *instr)
     g_Stage.spellcardVms[1].pendingInterrupt = 1;
 }
 
-#pragma var_order(bulletProps, numBullets, i, bullet, j)
-// FUNCTION: TH07 0x004190f0
 void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
 {
     i32 j;
@@ -628,8 +585,7 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
 
     ScreenEffect::RegisterChain(SCREEN_EFFECT_PULSE, 8, 1, 0x50cfcfff, 0);
 
-    numBullets = g_GameManager.difficulty == DIFF_EASY
-                     ? 10
+    numBullets = g_GameManager.difficulty == DIFF_EASY     ? 10
                  : g_GameManager.difficulty == DIFF_NORMAL ? 18
                  : g_GameManager.difficulty == DIFF_HARD   ? 22
                                                            : 25;
@@ -642,12 +598,10 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
 
         if ((g_GameManager.difficulty < DIFF_HARD &&
              bullet->sprites.spriteBullet.sprite->heightPx > 48.0f &&
-             bullet->pos.y > enemy->pos.y - 64.0f &&
-             bullet->pos.y < enemy->pos.y + 64.0f) ||
+             bullet->pos.y > enemy->pos.y - 64.0f && bullet->pos.y < enemy->pos.y + 64.0f) ||
             (g_GameManager.difficulty >= DIFF_HARD &&
              bullet->sprites.spriteBullet.sprite->heightPx > 48.0f &&
-             bullet->pos.y > enemy->pos.y - 48.0f &&
-             bullet->pos.y < enemy->pos.y + 48.0f))
+             bullet->pos.y > enemy->pos.y - 48.0f && bullet->pos.y < enemy->pos.y + 48.0f))
         {
             for (j = 0; j < numBullets; j++)
             {
@@ -672,11 +626,12 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
                 }
                 if (instr->args[1].i == 0)
                 {
-                    bulletProps.angle1 = g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f) - ZUN_PI / 2.0f;
+                    bulletProps.angle1 =
+                        g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f) - ZUN_PI / 2.0f;
                 }
                 else
                 {
-                    bulletProps.angle1 = AddNormalizeAngle(
+                    bulletProps.angle1 = utils::AddNormalizeAngle(
                         g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f), ZUN_PI / 4.0f);
                 }
                 bulletProps.speed1 = 0.1f;
@@ -693,11 +648,10 @@ void EnemyEclInstr::ExInsBurstLargeBullets(Enemy *enemy, EclRawInstr *instr)
     }
 }
 
-#pragma var_order(i, bullet)
-// FUNCTION: TH07 0x004194e0
-void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy,
-                                                EclRawInstr *instr)
+void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet;
     i32 i;
 
@@ -709,26 +663,21 @@ void EnemyEclInstr::ExInsYoumuCurveBulletsBelow(Enemy *enemy,
             continue;
         }
 
-        if (bullet->state2 == 0 &&
-            bullet->pos.y > enemy->pos.y &&
-            bullet->pos.y < 352.0f &&
-            bullet->pos.x > enemy->pos.x - 16.0f &&
-            bullet->pos.x < enemy->pos.x + 16.0f)
+        if (bullet->state2 == 0 && bullet->pos.y > enemy->pos.y && bullet->pos.y < 352.0f &&
+            bullet->pos.x > enemy->pos.x - 16.0f && bullet->pos.x < enemy->pos.x + 16.0f)
         {
-            bullet->AddAngleAccelCommand(0, 0, 160,
-                                         (i & 1) != 0
-                                             ? ZUN_PI / 60.0f
-                                             : -ZUN_PI / 60.0f,
+            bullet->AddAngleAccelCommand(0, 0, 160, (i & 1) != 0 ? ZUN_PI / 60.0f : -ZUN_PI / 60.0f,
                                          -bullet->speed / 180.0f);
             bullet->state2 = 1;
         }
     }
 }
 
-// FUNCTION: TH07 0x00419610
-void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy,
-                                                      EclRawInstr *instr)
+void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+    (void)instr;
+
     Bullet *bullet;
     i32 i;
 
@@ -751,17 +700,15 @@ void EnemyEclInstr::ExInsYoumuRedirectBulletsToPlayer(Enemy *enemy,
     }
 }
 
-// FUNCTION: TH07 0x004196e0
 void EnemyEclInstr::ExInsFlashScreen(Enemy *enemy, EclRawInstr *instr)
 {
-    ScreenEffect::RegisterChain(
-        SCREEN_EFFECT_PULSE, instr->args[1].i, 1, 0xd0cfcfff, 0);
+    ScreenEffect::RegisterChain(SCREEN_EFFECT_PULSE, instr->args[1].i, 1, 0xd0cfcfff, 0);
 }
 
-// FUNCTION: TH07 0x00419710
-void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy,
-                                                         EclRawInstr *instr)
+void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet = g_BulletManager.bullets;
     EnemyBulletShooter bulletProps;
     i32 i;
@@ -779,7 +726,7 @@ void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy,
             bulletProps.pos = bullet->pos;
             bulletProps.sprite = 0;
             bulletProps.spriteOffset = 6;
-            bulletProps.angle1 = AddNormalizeAngle(bullet->angle, ZUN_PI);
+            bulletProps.angle1 = utils::AddNormalizeAngle(bullet->angle, ZUN_PI);
             bulletProps.angle2 = ZUN_PI / 8.0f;
             bulletProps.speed1 = enemy->currentContext.eclContextArgs.floatVars1[1];
             bulletProps.count1 = 5;
@@ -791,11 +738,10 @@ void EnemyEclInstr::ExInsYuyukoTransformButterflyBullets(Enemy *enemy,
     }
 }
 
-#pragma var_order(i, bullet, args, angleOffset)
-// FUNCTION: TH07 0x00419880
-void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy,
-                                                   EclRawInstr *instr)
+void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     f32 angleOffset;
     EclContextArgs args;
     Bullet *bullet;
@@ -818,8 +764,8 @@ void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy,
             args.floatVars1[0] = bullet->angle;
             args.floatVars1[7] = angleOffset;
             angleOffset += ZUN_PI / 4.0f;
-            g_EnemyManager.SpawnEnemyEx(enemy->currentContext.subId + 1,
-                                        &bullet->pos, 1, -2, 10, &args);
+            g_EnemyManager.SpawnEnemyEx(enemy->currentContext.subId + 1, &bullet->pos, 1, -2, 10,
+                                        &args);
             bullet->Initialize();
         }
         else if (bullet->sprites.spriteBullet.activeSpriteIdx >= ANM_SPRITE_BULLETS_BUTTERFLY &&
@@ -830,10 +776,10 @@ void EnemyEclInstr::ExInsYuyukoButterflySpawnEnemy(Enemy *enemy,
     }
 }
 
-// FUNCTION: TH07 0x004199c0
-void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy,
-                                                     EclRawInstr *instr)
+void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet;
     i32 i;
 
@@ -853,8 +799,6 @@ void EnemyEclInstr::ExInsYuyukoCountButterflyBullets(Enemy *enemy,
     }
 }
 
-#pragma var_order(triggerHeight, bulletProps, i, bullet, j)
-// FUNCTION: TH07 0x00419a50
 void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
 {
     i32 j;
@@ -899,11 +843,12 @@ void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
                 }
                 if (instr->args[1].i == 0)
                 {
-                    bulletProps.angle1 = g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f) - ZUN_PI / 2.0f;
+                    bulletProps.angle1 =
+                        g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f) - ZUN_PI / 2.0f;
                 }
                 else
                 {
-                    bulletProps.angle1 = AddNormalizeAngle(
+                    bulletProps.angle1 = utils::AddNormalizeAngle(
                         g_Rng.GetRandomFloatInRange(ZUN_3PI / 2.0f), ZUN_PI / 4.0f);
                 }
                 bulletProps.speed1 = 0.1f;
@@ -920,27 +865,29 @@ void EnemyEclInstr::ExInsBurstLargeBullets2(Enemy *enemy, EclRawInstr *instr)
     }
 }
 
-// FUNCTION: TH07 0x00419d70
 void EnemyEclInstr::ExInsYuyukoFadeOutMusic(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+    (void)instr;
+
     g_Supervisor.FadeOutMusic(3.0f);
 }
 
-// FUNCTION: TH07 0x00419d90
-void EnemyEclInstr::ExInsYuyukoPlayResurrectionButterflyBgm(Enemy *enemy,
-                                                            EclRawInstr *instr)
+void EnemyEclInstr::ExInsYuyukoPlayResurrectionButterflyBgm(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)enemy;
+    (void)instr;
+
     if (g_Supervisor.PlayLoadedAudio(2) != ZUN_SUCCESS)
     {
         g_Supervisor.PlayAudio("bgm/th07_13b.mid");
     }
 }
 
-#pragma var_order(i, bulletProps, timerMod2, bullet)
-// FUNCTION: TH07 0x00419dc0
-void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy,
-                                                   EclRawInstr *instr)
+void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet = g_BulletManager.bullets;
     u32 timerMod2;
     EnemyBulletShooter bulletProps;
@@ -958,8 +905,7 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy,
         {
             continue;
         }
-        if ((bullet->exFlags & 0x40U) == 0 &&
-            bullet->pos.y < 320.0f &&
+        if ((bullet->exFlags & 0x40U) == 0 && bullet->pos.y < 320.0f &&
             bullet->sprites.spriteBullet.sprite->heightPx > 60.0f)
         {
             bulletProps.pos = bullet->pos;
@@ -1005,11 +951,10 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange(Enemy *enemy,
     }
 }
 
-#pragma var_order(i, bulletProps, timerMod3, bullet)
-// FUNCTION: TH07 0x00419ff0
-void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy,
-                                                    EclRawInstr *instr)
+void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy, EclRawInstr *instr)
 {
+    (void)instr;
+
     Bullet *bullet = g_BulletManager.bullets;
     i32 timerMod3;
     EnemyBulletShooter bulletProps;
@@ -1027,8 +972,7 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy,
         {
             continue;
         }
-        if ((bullet->exFlags & 0x40U) == 0 &&
-            bullet->pos.y < 320.0f &&
+        if ((bullet->exFlags & 0x40U) == 0 && bullet->pos.y < 320.0f &&
             bullet->sprites.spriteBullet.sprite->heightPx > 60.0f)
         {
             bulletProps.pos = bullet->pos;
@@ -1052,15 +996,7 @@ void EnemyEclInstr::ExInsSpawnBulletsWithDirChange2(Enemy *enemy,
                 bulletProps.speed1 = 0.8f;
             }
 
-            // ZUN bloat: What
-            if (timerMod3 != 0)
-            {
-                bulletProps.count1 = 1;
-            }
-            else
-            {
-                bulletProps.count1 = 1;
-            }
+            bulletProps.count1 = 1;
             bulletProps.count2 = 1;
             bulletProps.flags = 0x208;
             bulletProps.aimMode = 3;

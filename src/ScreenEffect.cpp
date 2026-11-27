@@ -2,168 +2,167 @@
 
 #include "AnmManager.hpp"
 #include "GameManager.hpp"
-#include "Global.hpp"
+#include "GameWindow.hpp"
+#include "Rng.hpp"
 #include "Supervisor.hpp"
+#include "graphics/ZunGraphics.hpp"
 
-// FUNCTION: TH07 0x0044a460
-void ScreenEffect::Clear(D3DCOLOR color)
+void ScreenEffect::Clear(ZunColor color)
 {
-    // The original cleared and presented twice to make the colour visible on hardware
-    // that would otherwise skip the first frame. One clear and one present is enough
-    // now that the swap is explicit.
-    RendererClear(((color >> 16) & 0xff) / 255.0f, ((color >> 8) & 0xff) / 255.0f,
-                  (color & 0xff) / 255.0f);
+    g_Supervisor.gfxDevice->SetClearColor(color);
+    g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER | CLEAR_DEPTH_BUFFER);
+    g_Supervisor.gfxDevice->SwapBuffers();
 }
 
-// FUNCTION: TH07 0x0044a520
-void ScreenEffect::SetViewport(D3DCOLOR color)
+void ScreenEffect::SetViewport(u32 color)
 {
     if (g_AnmManager)
     {
         g_AnmManager->Flush();
     }
-    g_Supervisor.viewport.X = 0;
-    g_Supervisor.viewport.Y = 0;
-    g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
-    g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-    g_Supervisor.viewport.MinZ = 0.0f;
-    g_Supervisor.viewport.MaxZ = 1.0f;
-    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
-    Clear(color);
+    g_Supervisor.viewport.x = 0;
+    g_Supervisor.viewport.y = 0;
+    g_Supervisor.viewport.width = GAME_WINDOW_WIDTH;
+    g_Supervisor.viewport.height = GAME_WINDOW_HEIGHT;
+    g_Supervisor.viewport.minZ = 0.0f;
+    g_Supervisor.viewport.maxZ = 1.0f;
+
+    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+    Clear(*(ZunColor *)&color);
 }
 
-// FUNCTION: TH07 0x0044a5a0
 u32 ScreenEffect::OnUpdateFadeOut(ScreenEffect *arg)
 {
+    if (arg->timer == 0)
+    {
+        arg->alpha = 255;
+    }
+    arg->prevAlpha = arg->alpha;
     if (arg->duration != 0)
     {
-        arg->alpha = 255.0f - arg->timer.AsFloat() * 255.0f /
-                                  (f32)arg->duration;
+        arg->alpha = (i32)(255.0f - arg->timer.AsFloat() * 255.0f / (f32)arg->duration);
         if (arg->alpha < 0)
         {
-            arg->alpha = 0;
+            arg->alpha = (i32)0.0f;
         }
     }
-
     if (arg->timer >= arg->duration)
     {
-        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+        return 0;
     }
 
     arg->timer++;
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044a650
-void ScreenEffect::DrawSquare(ZunRect *rect, D3DCOLOR color)
+void ScreenEffect::DrawSquare(ZunRect *rect, u32 color)
 {
     g_AnmManager->Flush();
 
     VertexDiffuseXyzrhw vertices[4];
 
-    vertices[0].pos = Float3(rect->left, rect->top, 0.0f);
-    vertices[1].pos = Float3(rect->right, rect->top, 0.0f);
-    vertices[2].pos = Float3(rect->left, rect->bottom, 0.0f);
-    vertices[3].pos = Float3(rect->right, rect->bottom, 0.0f);
+    vertices[0].pos = ZunVec3(rect->left, rect->top, 0.0f);
+    vertices[1].pos = ZunVec3(rect->right, rect->top, 0.0f);
+    vertices[2].pos = ZunVec3(rect->left, rect->bottom, 0.0f);
+    vertices[3].pos = ZunVec3(rect->right, rect->bottom, 0.0f);
     vertices[0].w = vertices[1].w = vertices[2].w = vertices[3].w = 1.0f;
-    vertices[0].diffuse.color =
-        vertices[1].diffuse.color =
-            vertices[2].diffuse.color =
-                vertices[3].diffuse.color = color;
-    // Untextured, vertex-coloured fill. The renderer picks the untextured shader path
-    // because no texture is passed, which is exactly the SELECTARG1 setup below.
+    vertices[0].diffuse.color = vertices[1].diffuse.color = vertices[2].diffuse.color =
+        vertices[3].diffuse.color = color;
+    g_Supervisor.gfxDevice->SetTextureArg(TEX_ARG_DIFFUSE);
     if (!g_Supervisor.cfg.disableZBuffer)
     {
-        RendererSetZWrite(false);
+        g_Supervisor.gfxDevice->SetDepthMask(false);
     }
-    RendererSetBlend(RENDER_BLEND_ALPHA);
-    RendererDrawColoredQuad(rect->left, rect->top, rect->right, rect->bottom, color,
-                            color, color, color);
-
-    // The batcher's cached state no longer matches what was just drawn, so invalidate
-    // it the way the original did.
+    g_Supervisor.gfxDevice->SetBlendMode(BLEND_ALPHA, BLEND_ALPHA);
+    g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_DISABLE);
+    g_Supervisor.gfxDevice->SetColorOp(COMPONENT_ALPHA, COLOR_OP_DISABLE);
+    g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, vertices,
+                                            sizeof(VertexDiffuseXyzrhw));
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
-    g_AnmManager->SetTexture(NULL);
+    g_AnmManager->SetTexture(0);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
+    g_Supervisor.gfxDevice->SetTextureArg(TEX_ARG_TEXTURE);
 }
 
-// FUNCTION: TH07 0x0044aa20
-void ScreenEffect::DrawColoredQuad(ZunRect *rect, D3DCOLOR topLeft,
-                                   D3DCOLOR topRight, D3DCOLOR bottomLeft,
-                                   D3DCOLOR bottomRight)
+void ScreenEffect::DrawColoredQuad(ZunRect *rect, u32 param_2, u32 param_3, u32 param_4,
+                                   u32 param_5)
 {
     g_AnmManager->Flush();
 
     VertexDiffuseXyzrhw vertices[4];
 
-    vertices[0].pos = Float3(rect->left, rect->top, 0.0f);
-    vertices[1].pos = Float3(rect->right, rect->top, 0.0f);
-    vertices[2].pos = Float3(rect->left, rect->bottom, 0.0f);
-    vertices[3].pos = Float3(rect->right, rect->bottom, 0.0f);
+    vertices[0].pos = ZunVec3(rect->left, rect->top, 0.0f);
+    vertices[1].pos = ZunVec3(rect->right, rect->top, 0.0f);
+    vertices[2].pos = ZunVec3(rect->left, rect->bottom, 0.0f);
+    vertices[3].pos = ZunVec3(rect->right, rect->bottom, 0.0f);
     vertices[0].w = vertices[1].w = vertices[2].w = vertices[3].w = 1.0f;
-    vertices[0].diffuse.color = topLeft;
-    vertices[1].diffuse.color = topRight;
-    vertices[2].diffuse.color = bottomLeft;
-    vertices[3].diffuse.color = bottomRight;
+    vertices[0].diffuse.color = param_2;
+    vertices[1].diffuse.color = param_3;
+    vertices[2].diffuse.color = param_4;
+    vertices[3].diffuse.color = param_5;
+    g_Supervisor.gfxDevice->SetTextureArg(TEX_ARG_DIFFUSE);
     if (!g_Supervisor.cfg.disableZBuffer)
     {
-        RendererSetZWrite(false);
+        g_Supervisor.gfxDevice->SetDepthMask(false);
     }
-    RendererSetBlend(RENDER_BLEND_ALPHA);
-    RendererDrawColoredQuad(rect->left, rect->top, rect->right, rect->bottom, topLeft,
-                            topRight, bottomLeft, bottomRight);
 
+    g_Supervisor.gfxDevice->SetBlendMode(BLEND_ALPHA, BLEND_ALPHA);
+    g_Supervisor.gfxDevice->SetColorOp(COMPONENT_RGB, COLOR_OP_DISABLE);
+    g_Supervisor.gfxDevice->SetColorOp(COMPONENT_ALPHA, COLOR_OP_DISABLE);
+    g_Supervisor.gfxDevice->DrawPrimitiveUP(PRIM_TRIANGLE_STRIP, 2, vertices,
+                                            sizeof(VertexDiffuseXyzrhw));
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
-    g_AnmManager->SetTexture(NULL);
+    g_AnmManager->SetTexture(0);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
+    g_Supervisor.gfxDevice->SetTextureArg(TEX_ARG_TEXTURE);
 }
 
-// FUNCTION: TH07 0x0044adf0
 u32 ScreenEffect::OnDrawFullScreenColor(ScreenEffect *arg)
 {
     ZunRect rect;
 
     rect.left = 0.0f;
     rect.top = 0.0f;
-    rect.right = GAME_WINDOW_WIDTH;
-    rect.bottom = GAME_WINDOW_HEIGHT;
+    rect.right = (f32)GAME_WINDOW_WIDTH;
+    rect.bottom = (f32)GAME_WINDOW_HEIGHT;
     g_AnmManager->Flush();
-    g_Supervisor.viewport.X = 0;
-    g_Supervisor.viewport.Y = 0;
-    g_Supervisor.viewport.Width = GAME_WINDOW_WIDTH;
-    g_Supervisor.viewport.Height = GAME_WINDOW_HEIGHT;
-    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
-    ScreenEffect::DrawSquare(&rect, arg->alpha << 24 | arg->effectArg1);
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    g_Supervisor.viewport.x = 0;
+    g_Supervisor.viewport.y = 0;
+    g_Supervisor.viewport.width = GAME_WINDOW_WIDTH;
+    g_Supervisor.viewport.height = GAME_WINDOW_HEIGHT;
+    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+
+    u32 drawAlpha = utils::Lerp(arg->prevAlpha, arg->alpha, g_RenderAlpha);
+    ScreenEffect::DrawSquare(&rect, drawAlpha << 24 | arg->args[0]);
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044ae90
 u32 ScreenEffect::OnUpdateFadeIn(ScreenEffect *arg)
 {
+    arg->prevAlpha = arg->alpha;
     if (arg->duration != 0)
     {
-        arg->alpha = arg->timer.AsFloat() * 255.0f / (f32)arg->duration;
+        arg->alpha = (i32)(arg->timer.AsFloat() * 255.0f / (f32)arg->duration);
         if (arg->alpha < 0)
         {
-            arg->alpha = 0;
+            arg->alpha = (i32)0.0f;
         }
     }
     if (arg->timer >= arg->duration)
     {
-        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+        return 0;
     }
 
     arg->timer++;
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044af30
 u32 ScreenEffect::OnDrawPlayAreaColor(ScreenEffect *arg)
 {
     ZunRect rect;
@@ -172,17 +171,23 @@ u32 ScreenEffect::OnDrawPlayAreaColor(ScreenEffect *arg)
     rect.top = 16.0f;
     rect.right = 416.0f;
     rect.bottom = 464.0f;
-    ScreenEffect::DrawSquare(&rect, arg->alpha << 24 | arg->effectArg1);
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+
+    u32 drawAlpha = utils::Lerp(arg->prevAlpha, arg->alpha, g_RenderAlpha);
+    ScreenEffect::DrawSquare(&rect, drawAlpha << 24 | arg->args[0]);
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044af80
 u32 ScreenEffect::OnUpdatePulse(ScreenEffect *arg)
 {
+    if (arg->timer == 0)
+    {
+        arg->alpha = (arg->args[1] >> 24) & 255;
+    }
+    arg->prevAlpha = arg->alpha;
     if (arg->timer < arg->duration)
     {
-        arg->alpha = (((u32)arg->effectArg2 >> 24) & 255) -
-                     (i32)((((u32)arg->effectArg2 >> 24) & 255) * arg->timer.AsFloat() / arg->duration);
+        arg->alpha = ((arg->args[1] >> 24) & 255) -
+                     (i32)(((arg->args[1] >> 24) & 255) * arg->timer.AsFloat() / arg->duration);
         if (arg->alpha < 0)
         {
             arg->alpha = 0;
@@ -191,18 +196,17 @@ u32 ScreenEffect::OnUpdatePulse(ScreenEffect *arg)
     else
     {
         arg->alpha = 0;
-        arg->effectArg1--;
-        if (arg->effectArg1 <= 0)
+        arg->args[0]--;
+        if ((i32)arg->args[0] <= 0)
         {
-            return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+            return 0;
         }
         arg->timer = 0;
     }
     arg->timer++;
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044b090
 u32 ScreenEffect::OnDrawPlayAreaPulseColor(ScreenEffect *arg)
 {
     ZunRect rect;
@@ -211,84 +215,92 @@ u32 ScreenEffect::OnDrawPlayAreaPulseColor(ScreenEffect *arg)
     rect.top = 16.0f;
     rect.right = 416.0f;
     rect.bottom = 464.0f;
-    ScreenEffect::DrawSquare(&rect,
-                             arg->alpha << 24 | (arg->effectArg2 & 0xffffff));
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    u32 drawAlpha = utils::Lerp(arg->prevAlpha, arg->alpha, g_RenderAlpha);
+    ScreenEffect::DrawSquare(&rect, drawAlpha << 24 | (arg->args[1] & 0xffffff));
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044b0e0
 u32 ScreenEffect::OnUpdateScreenShake(ScreenEffect *arg)
 {
     if (g_GameManager.isTimeStopped)
     {
-        return CHAIN_CALLBACK_RESULT_CONTINUE;
+        return 1;
     }
 
     if (g_GameManager.framesThisStage <= 1)
     {
-        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+        g_AnmManager->shakeOffset.x = 0.0f;
+        g_AnmManager->shakeOffset.y = 0.0f;
+        g_AnmManager->prevShakeOffset = g_AnmManager->shakeOffset;
+        return 0;
     }
 
     arg->timer++;
     if (arg->timer >= arg->duration)
     {
-        return CHAIN_CALLBACK_RESULT_CONTINUE_AND_REMOVE_JOB;
+        g_AnmManager->shakeOffset.x = 0.0f;
+        g_AnmManager->shakeOffset.y = 0.0f;
+        g_AnmManager->prevShakeOffset = g_AnmManager->shakeOffset;
+        return 0;
     }
 
-    f32 offset = (f32)(arg->effectArg2 - arg->effectArg1) * arg->timer.AsFloat();
-    offset /= (f32)arg->duration;
-    offset += (f32)arg->effectArg1;
+    g_AnmManager->prevShakeOffset = g_AnmManager->shakeOffset;
+
+    f32 fVar1 = (f32)(i32)(arg->args[1] - arg->args[0]) * arg->timer.AsFloat();
+    fVar1 /= (f32)arg->duration;
+    fVar1 += (f32)(i32)arg->args[0];
     switch (g_Rng.GetRandomU32InRange(3))
     {
     case 0:
-        g_AnmManager->offset.x = 0.0f;
+        g_AnmManager->shakeOffset.x = 0.0f;
         break;
     case 1:
-        g_AnmManager->offset.x = offset;
+        g_AnmManager->shakeOffset.x = fVar1;
         break;
     case 2:
-        g_AnmManager->offset.x = -offset;
+        g_AnmManager->shakeOffset.x = -fVar1;
     }
     switch (g_Rng.GetRandomU32InRange(3))
     {
     case 0:
-        g_AnmManager->offset.y = 0.0f;
+        g_AnmManager->shakeOffset.y = 0.0f;
         break;
     case 1:
-        g_AnmManager->offset.y = offset;
+        g_AnmManager->shakeOffset.y = fVar1;
         break;
     case 2:
-        g_AnmManager->offset.y = -offset;
+        g_AnmManager->shakeOffset.y = -fVar1;
     }
-    return CHAIN_CALLBACK_RESULT_CONTINUE;
+    return 1;
 }
 
-// FUNCTION: TH07 0x0044b280
 ZunResult ScreenEffect::AddedCallback(ScreenEffect *arg)
 {
     arg->timer = 0;
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0044b2c0
 ZunResult ScreenEffect::DeletedCallback(ScreenEffect *arg)
 {
+    if (arg->type == 1)
+    {
+        g_AnmManager->shakeOffset.x = 0.0f;
+        g_AnmManager->shakeOffset.y = 0.0f;
+    }
     arg->calcChain->deletedCallback = NULL;
     g_Chain.Cut(arg->drawChain);
     arg->drawChain = NULL;
-    ZUN_DELETE(arg);
+    delete arg;
+    arg = NULL;
     return ZUN_SUCCESS;
 }
 
-#pragma var_order(calcChain, drawChain, mgr)
-// FUNCTION: TH07 0x0044b310
-ScreenEffect *ScreenEffect::RegisterChain(i32 type, i32 duration, u32 arg1,
-                                          u32 arg2, u32 arg3)
+ScreenEffect *ScreenEffect::RegisterChain(i32 type, i32 duration, u32 arg1, u32 arg2, u32 arg3)
 {
     ChainElem *calcChain = NULL;
     ChainElem *drawChain = NULL;
 
-    ScreenEffect *mgr = ZUN_NEW(ScreenEffect, "ScreenInf");
+    ScreenEffect *mgr = new ScreenEffect;
     if (!mgr)
     {
         return NULL;
@@ -321,9 +333,9 @@ ScreenEffect *ScreenEffect::RegisterChain(i32 type, i32 duration, u32 arg1,
     calcChain->arg = mgr;
     mgr->type = type;
     mgr->duration = duration;
-    mgr->effectArg1 = arg1;
-    mgr->effectArg2 = arg2;
-    mgr->effectArg3 = arg3;
+    mgr->args[0] = arg1;
+    mgr->args[1] = arg2;
+    mgr->args[2] = arg3;
     if (g_Chain.AddToCalcChain(calcChain, CHAIN_PRIO_CALC_SCREENEFFECT))
     {
         return NULL;

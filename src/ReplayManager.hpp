@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Global.hpp"
+#include "Chain.hpp"
 #include "Supervisor.hpp"
 #include "inttypes.hpp"
 
@@ -14,6 +14,7 @@ struct ReplayDataInput
     u16 frameNum;
     u16 inputKey;
 };
+static_assert(sizeof(ReplayDataInput) == 0x4);
 
 struct StageReplayData
 {
@@ -35,13 +36,7 @@ struct StageReplayData
     i32 unused_28;
     ReplayDataInput replayInputs[115189];
 };
-C_ASSERT(sizeof(StageReplayData) == 0x70800);
-
-union StageReplayDataUnion {
-    StageReplayData *data;
-    i8 *fpsData;
-    i32 offset;
-};
+static_assert(sizeof(StageReplayData) == 0x70800);
 
 #define REPLAY_STAGE_COUNT 7
 
@@ -49,18 +44,18 @@ struct ReplayHeader
 {
     u32 magic;
     u16 version;
-    // pad 2
+    u8 pad1[2];
     i32 checksum;
     u8 rngValue1;
     u8 key;
-    // pad 2
+    u8 pad2[2];
     i32 replaySize;
     i32 compressedSize;
     i32 sizeWithoutHeader;
-    StageReplayDataUnion stageReplayData[REPLAY_STAGE_COUNT];
-    StageReplayDataUnion stageFpsData[REPLAY_STAGE_COUNT];
+    u32 stageReplayDataOffsets[REPLAY_STAGE_COUNT];
+    u32 stageFpsDataOffsets[REPLAY_STAGE_COUNT];
 };
-C_ASSERT(sizeof(ReplayHeader) == 0x54);
+static_assert(sizeof(ReplayHeader) == 0x54);
 
 struct ReplayData
 {
@@ -81,17 +76,19 @@ struct ReplayData
     i32 exeSize;
     i32 exeChecksum;
     char replayStr[4];
-    i16 unk_90;
+    i16 versionChar2;
     // pad 3
 };
-C_ASSERT(sizeof(ReplayData) == 0x94);
+static_assert(sizeof(ReplayData) == 0x94);
 
 struct ReplayFile
 {
     ReplayHeader head;
     ReplayData data;
+    StageReplayData *stageReplayData[7];
+    i8 *stageFpsData[7];
+    u8 *rawData;
 };
-C_ASSERT(sizeof(ReplayFile) == 0xe8);
 
 enum ReplayManagerAction
 {
@@ -118,12 +115,12 @@ struct ReplayManager
     static void SaveReplay(const char *filename, char *replayName);
     static void SaveReplay2(const char *filename);
     static void StopRecording();
-    static ReplayFile *ValidateReplayData(ReplayFile *data,
-                                          i32 size);
+    static ReplayFile *ValidateReplayData(ReplayFile *data, i32 size);
+    static void FreeReplay(ReplayFile *replay);
 
     ZunBool StageReplayExists(i32 stage)
     {
-        return this->data->head.stageReplayData[stage].data != NULL;
+        return this->data->stageReplayData[stage] != NULL;
     }
 
     i32 GetAction()
@@ -151,5 +148,5 @@ struct ReplayManager
     u16 rngSeed;
     u16 replayEventFlags;
 };
-C_ASSERT(sizeof(ReplayManager) == 0xd8);
+
 extern ReplayManager *g_ReplayManager;

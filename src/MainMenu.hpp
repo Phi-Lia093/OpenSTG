@@ -1,7 +1,7 @@
 #pragma once
 
-#include "AnmManager.hpp"
-#include "Global.hpp"
+#include "AnmVm.hpp"
+#include "Chain.hpp"
 #include "ReplayManager.hpp"
 #include "Supervisor.hpp"
 
@@ -105,22 +105,12 @@ enum MenuCursorSelectShotType
 
 struct MainMenu
 {
-    void SetMenuState(MenuState menuState)
-    {
-        this->prevMenuState = this->menuState;
-        this->menuState = menuState;
-        this->inputDelayTimer = 0;
-        this->stateTimer = 0;
-        this->menuSubState = 0;
-        this->idleFrames = 0;
-    }
-
     MainMenu()
     {
         memset(this, 0, sizeof(MainMenu));
     }
 
-    static ZunResult RegisterChain(u32 unused);
+    static ZunResult RegisterChain();
 
     static ZunResult AddedCallback(MainMenu *arg);
     static ZunResult DeletedCallback(MainMenu *arg);
@@ -145,8 +135,27 @@ struct MainMenu
     i32 MoveCursorHorizontal(i32 max);
     i32 MoveCursorVertical(i32 max);
     ZunResult Release();
-    void SwapMapping(i16 btnPressed, i16 oldMapping, i16 idk);
+    void SwapMapping(i16 btnPressed, i16 oldMapping);
     ZunResult UpdateMenuDigits(AnmVm *vm, i16 number);
+
+    static void InitializeTimingVars(Supervisor *arg)
+    {
+        arg->timingErrorCount = 0;
+        arg->maxTimingError = 0;
+        arg->checkTiming = 0;
+        arg->timingSpikeAccumulator = 0;
+        arg->timingBadCount = 0;
+    }
+
+    void SetMenuState(MenuState menuState)
+    {
+        this->prevMenuState = this->menuState;
+        this->menuState = menuState;
+        this->inputDelayTimer = 0;
+        this->stateTimer = 0;
+        this->menuSubState = 0;
+        this->idleFrames = 0;
+    }
 
     ZunBool IsSelected(i32 idx)
     {
@@ -164,6 +173,21 @@ struct MainMenu
     {
         i32 selected = idx == this->selectedStage;
         return selected;
+    }
+
+    void UpdatePrev()
+    {
+        if (this->vms)
+        {
+            for (i32 i = 0; i < this->vmCount; i++)
+            {
+                this->vms[i].UpdatePrev();
+            }
+        }
+        for (i32 i = 0; i < ARRAY_SIZE_SIGNED(this->descriptionVms); i++)
+        {
+            this->descriptionVms[i].UpdatePrev();
+        }
     }
 
     i32 cursor;
@@ -195,4 +219,3 @@ struct MainMenu
     // pad 2
     GameConfiguration cfg;
 };
-C_ASSERT(sizeof(MainMenu) == 0xd158);

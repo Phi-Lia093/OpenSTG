@@ -1,10 +1,9 @@
 #pragma once
 
-#include "AnmManager.hpp"
+#include "AnmVm.hpp"
+#include "Chain.hpp"
 #include "EffectManager.hpp"
 #include "GameManager.hpp"
-#include "Global.hpp"
-#include "ZunMath.hpp"
 #include "inttypes.hpp"
 
 extern const char *g_ShooterTable[6];
@@ -57,37 +56,53 @@ enum BorderState
     BORDER_READY,
 };
 
-struct BombDamageRegion
+struct BombProjectile
 {
-    Float3 pos;
-    Float3 size;
+    ZunVec3 pos;
+    ZunVec3 size;
     i32 lifetime;
-    i32 damage;
+    union {
+        i32 itemType;
+        i32 damage;
+    };
 };
-C_ASSERT(sizeof(BombDamageRegion) == 0x20);
 
-struct BombCancelRegion
+struct BombClearBox
 {
     Float2 pos;
     Float2 size;
     f32 radius;
     f32 radiusGrowth;
     i32 lifetime;
+    union {
+        i32 itemType;
+        i32 damage;
+    };
+};
+
+struct CachedBombClearBox
+{
+    bool isBox;
+    f32 minX, maxX;
+    f32 minY, maxY;
+    f32 cx, cy;
+    f32 radiusSq;
     i32 itemType;
 };
-C_ASSERT(sizeof(BombCancelRegion) == 0x20);
 
-struct PlayerBombProjectile
+struct PlayerBombSubInfo
 {
     i32 state;
     i32 counter;
     f32 custom;
+    f32 prevCustom;
     f32 speed;
     f32 angle;
-    Float3 pos;
-    Float3 posHistory[32];
-    Float3 velocity;
-    Float3 accel;
+    ZunVec3 pos;
+    ZunVec3 prevPos;
+    ZunVec3 posHistory[32];
+    ZunVec3 velocity;
+    ZunVec3 accel;
     AnmVm vms[8];
     Effect *effect;
     ZunTimer timer;
@@ -116,20 +131,41 @@ struct PlayerBombInfo
     BombCallback draw;
     BombCallback bombFocusCalc;
     BombCallback drawFocus;
-    PlayerBombProjectile projectiles[128];
-    Float3 startPos;
+    PlayerBombSubInfo subInfo[128];
 };
 
 struct PlayerBullet
 {
+    f32 *GetPosX()
+    {
+        return &this->pos.x;
+    }
+
+    f32 *GetPosY()
+    {
+        return &this->pos.y;
+    }
+
+    f32 *GetVmPosX()
+    {
+        return &this->vm.pos.x;
+    }
+
+    f32 *GetVmPosY()
+    {
+        return &this->vm.pos.y;
+    }
+
     AnmVm vm;
-    Float3 pos;
-    Float3 posHistory[16];
-    Float3 hitboxSize;
+    ZunVec3 pos;
+    ZunVec3 prevPos;
+    ZunVec3 posHistory[16];
+    ZunVec3 hitboxSize;
     Float2 velocity;
     Float2 offset;
     f32 speed;
     f32 angle;
+    f32 prevAngle;
     ZunTimer timer;
     i16 damage;
     i16 bulletState;
@@ -139,10 +175,9 @@ struct PlayerBullet
     i16 trailLength;
     i32 (*updateCallback)(struct Player *, struct PlayerBullet *);
     i32 (*drawCallback)(struct Player *, struct PlayerBullet *);
-    i32 (*hitCallback)(struct Player *, struct PlayerBullet *, Float3 *);
+    i32 (*hitCallback)(struct Player *, struct PlayerBullet *, ZunVec3 *);
     struct ShtEntry *shtEntry;
 };
-C_ASSERT(sizeof(PlayerBullet) == 0x364);
 
 struct PlayerBulletTimer
 {
@@ -152,7 +187,7 @@ struct PlayerBulletTimer
 
 struct Player
 {
-    static ZunResult RegisterChain(u32 param);
+    static ZunResult RegisterChain(u32 param_1);
     static void CutChain();
 
     static ZunResult AddedCallback(Player *arg);
@@ -173,35 +208,35 @@ struct Player
     void DrawBulletExplosions();
 
     void ActivateBorder();
-    f32 AngleToPlayer(Float3 *pos);
-    void BreakBorder(u32 unused);
+    f32 AngleToPlayer(ZunVec3 *pos);
+    void BreakBorder();
     void BreakBorderNaturally();
 
-    i32 CalcItemBoxCollision(Float3 *center, Float3 *size);
-    i32 CalcKillboxCollision(Float3 *center, Float3 *size);
-    i32 CalcLaserHitbox(Float3 *center, Float3 *size,
-                        Float3 *origin, f32 rotation, ZunBool canGraze);
-    i32 CalcBombCollision(Float3 *center, Float3 *size);
-    i32 CalcDamageToEnemy(Float3 *center, Float3 *size,
-                          i32 *enemyHitByBomb);
-    i32 CheckGraze(Float3 *center, Float3 *size);
+    i32 CalcItemBoxCollision(ZunVec3 *center, ZunVec3 *size);
+    i32 CalcKillboxCollision(ZunVec3 *center, ZunVec3 *size);
+    i32 CalcLaserHitbox(ZunVec3 *center, ZunVec3 *size, ZunVec3 *origin, f32 rotation,
+                        ZunBool canGraze);
+    i32 CalcBombCollision(ZunVec3 *center, ZunVec3 *size);
+    i32 CalcDamageToEnemy(ZunVec3 *param_1, ZunVec3 *param_2, i32 *param_3);
+    i32 CheckGraze(ZunVec3 *center, ZunVec3 *size);
 
     void Die();
     i32 HandlePlayerInputs();
     void Respawn();
-    void ScoreGraze(Float3 *pos);
-    BombCancelRegion *SpawnCancelRegionCircle(Float3 *pos, f32 radius, f32 radiusGrowth,
-                                              i32 lifetime, i32 itemType);
-    BombCancelRegion *SpawnCancelRegionRect(Float3 *centerPosition, f32 sizeX,
-                                            f32 sizeY, i32 itemType);
+    void ScoreGraze(ZunVec3 *param_1);
+    BombClearBox *SpawnGrowingBomb(ZunVec3 *pos, f32 radius, f32 radiusGrowth, i32 lifetime,
+                                   i32 itemType);
+    BombClearBox *SpawnBombProjectile(ZunVec3 *centerPosition, f32 sizeX, f32 sizeY, i32 itemType);
     static void SpawnBullets(Player *player, u32 timer);
     void StartFireBulletTimer();
 
+    void RebuildBombBoxCache();
+
     void SetToTopLeftPos(AnmVm *vm)
     {
-        vm->pos[0] += g_GameManager.arcadeRegionTopLeftPos.x;
-        vm->pos[1] += g_GameManager.arcadeRegionTopLeftPos.y;
-        vm->pos[2] = 0.0f;
+        vm->pos.x += g_GameManager.arcadeRegionTopLeftPos.x;
+        vm->pos.y += g_GameManager.arcadeRegionTopLeftPos.y;
+        vm->pos.z = 0.0f;
     }
 
     ZunTimer *GetBombTimer()
@@ -210,7 +245,8 @@ struct Player
         return timer;
     }
 
-    static void SetVecCorners(Float3 *topLeft, Float3 *bottomRight, Float3 *center, Float3 *size)
+    static void SetVecCorners(ZunVec3 *topLeft, ZunVec3 *bottomRight, ZunVec3 *center,
+                              ZunVec3 *size)
     {
         topLeft->x = center->x - size->x * 0.5f;
         topLeft->y = center->y - size->y * 0.5f;
@@ -218,30 +254,70 @@ struct Player
         bottomRight->y = center->y + size->y * 0.5f;
     }
 
+    f32 *GetPosX()
+    {
+        return &this->pos.x;
+    }
+
+    f32 *GetPosY()
+    {
+        return &this->pos.y;
+    }
+
     void SetFocusEffect(Effect *effect)
     {
         this->focusEffect = effect;
     }
 
+    void UpdatePrev()
+    {
+        this->playerSprite.UpdatePrev();
+        this->optionsSprite[0].UpdatePrev();
+        this->optionsSprite[1].UpdatePrev();
+        for (i32 i = 0; i < 96; i++)
+        {
+            if (this->bullets[i].bulletState != 0)
+            {
+                this->bullets[i].vm.UpdatePrev();
+            }
+        }
+        if (this->bombInfo.isInUse)
+        {
+            for (i32 i = 0; i < 128; i++)
+            {
+                this->bombInfo.subInfo[i].prevPos = this->bombInfo.subInfo[i].pos;
+                this->bombInfo.subInfo[i].prevCustom = this->bombInfo.subInfo[i].custom;
+                for (i32 j = 0; j < 8; j++)
+                {
+                    this->bombInfo.subInfo[i].vms[j].UpdatePrev();
+                }
+            }
+        }
+    }
+
     AnmVm playerSprite;
     AnmVm optionsSprite[3];
-    Float3 pos;
-    Float3 unused_93c;
-    Float3 hitboxTopLeft;
-    Float3 hitboxBottomRight;
-    Float3 grazeTopLeft;
-    Float3 grazeBottomRight;
-    Float3 grabItemTopLeft;
-    Float3 grabItemBottomRight;
-    Float3 hitboxSize;
-    Float3 grazeSize;
-    Float3 grabItemSize;
-    Float3 optionsPosition[2];
+    ZunVec3 pos;
+    ZunVec3 prevPos;
+    ZunVec3 hitboxTopLeft;
+    ZunVec3 hitboxBottomRight;
+    ZunVec3 grazeTopLeft;
+    ZunVec3 grazeBottomRight;
+    ZunVec3 grabItemTopLeft;
+    ZunVec3 grabItemBottomRight;
+    ZunVec3 hitboxSize;
+    ZunVec3 grazeSize;
+    ZunVec3 grabItemSize;
+    ZunVec3 optionsPosition[2];
+    ZunVec3 prevOptionsPosition[2];
     Float2 velocity;
     i32 unused_9d4;
     Effect *focusEffect;
-    BombDamageRegion bombDamageRegions[112];
-    BombCancelRegion bombCancelRegions[96];
+    BombProjectile bombDamageBoxes[112];
+    BombClearBox bombClearBoxes[96];
+    CachedBombClearBox activeBombClearBoxesCache[96];
+    i32 numActiveBombClearBoxes;
+    bool dirtyBombBoxes;
     ZunBool isBombing;
     ShtEntry *shtEntries[4];
     f32 horizontalMovementSpeedMultiplierDuringBomb;
@@ -261,8 +337,8 @@ struct Player
     PlayerDirection playerDirection;
     f32 previousHorizontalSpeed;
     f32 previousVerticalSpeed;
-    Float3 positionOfLastEnemyHit;
-    Float3 sakuyaTargetPosition;
+    ZunVec3 positionOfLastEnemyHit;
+    ZunVec3 sakuyaTargetPosition;
     ZunBool targetingEnemy;
     PlayerBullet bullets[96];
     PlayerBulletTimer timers[3];
@@ -272,6 +348,7 @@ struct Player
     i32 unused_16a18;
     i32 unused_16a1c;
     PlayerBombInfo bombInfo;
+    ZunVec3 bombStartPos;
     f32 optionAngle;
     ChainElem *calcChain;
     ChainElem *drawChain1;
@@ -281,7 +358,7 @@ struct Player
     struct ShtData *shooterData;
     struct ShtData *shooterDataFocus;
 };
-C_ASSERT(sizeof(Player) == 0xb7e78);
+
 extern Player g_Player;
 
 typedef i32 (*ShtFunc1)(Player *, PlayerBullet *, i32, struct ShtEntry *);
@@ -290,7 +367,7 @@ typedef i32 (*ShtFunc2)(Player *, PlayerBullet *);
 extern ShtFunc2 g_ShtUpdateFuncs[6];
 typedef i32 (*ShtFunc3)(Player *, PlayerBullet *);
 extern ShtFunc3 g_ShtDrawFuncs[2];
-typedef i32 (*ShtFunc4)(Player *, PlayerBullet *, Float3 *);
+typedef i32 (*ShtFunc4)(Player *, PlayerBullet *, ZunVec3 *);
 extern ShtFunc4 g_ShtHitFuncs[4];
 
 struct ShtEntry
@@ -309,7 +386,7 @@ struct ShtEntry
     i32 (*fireCallback)(Player *, PlayerBullet *, i32, struct ShtEntry *);
     i32 (*updateCallback)(Player *, PlayerBullet *);
     i32 (*drawCallback)(Player *, PlayerBullet *);
-    i32 (*hitCallback)(Player *, PlayerBullet *, Float3 *);
+    i32 (*hitCallback)(Player *, PlayerBullet *, ZunVec3 *);
 };
 
 struct ShtLevel
@@ -321,30 +398,27 @@ struct ShtLevel
 struct ShtData
 {
     static ZunResult LoadShtData(ShtData **data, const char *shtPath);
-    static i32 FireBulletDefault(Player *player, PlayerBullet *bullet,
-                                 i32 fireTime, ShtEntry *shtEntry);
-    static i32 FireOrbBulletUnfocused(Player *player, PlayerBullet *bullet,
-                                      i32 fireTime, ShtEntry *shtEntry);
-    static i32 FireOrbBulletFocused(Player *player, PlayerBullet *bullet,
-                                    i32 fireTime, ShtEntry *shtEntry);
-    static i32 FireHomingBullet(Player *player, PlayerBullet *bullet,
-                                i32 fireTime, ShtEntry *shtEntry);
-    static i32 FireRotatingOrbBullet(Player *player, PlayerBullet *bullet,
-                                     i32 fireTime, ShtEntry *shtEntry);
+    static i32 FireBulletDefault(Player *player, PlayerBullet *bullet, i32 fireTime,
+                                 ShtEntry *shtEntry);
+    static i32 FireOrbBulletUnfocused(Player *player, PlayerBullet *bullet, i32 fireTime,
+                                      ShtEntry *shtEntry);
+    static i32 FireOrbBulletFocused(Player *player, PlayerBullet *bullet, i32 fireTime,
+                                    ShtEntry *shtEntry);
+    static i32 FireHomingBullet(Player *player, PlayerBullet *bullet, i32 fireTime,
+                                ShtEntry *shtEntry);
+    static i32 FireRotatingOrbBullet(Player *player, PlayerBullet *bullet, i32 fireTime,
+                                     ShtEntry *shtEntry);
 
     static i32 UpdateHomingBullet(Player *player, PlayerBullet *bullet);
     static i32 UpdateHomingBulletFocused(Player *player, PlayerBullet *bullet);
-    static i32 UpdateUpwardAcceleratingBullet(Player *player,
-                                              PlayerBullet *bullet);
+    static i32 UpdateUpwardAcceleratingBullet(Player *player, PlayerBullet *bullet);
     static i32 UpdateOrbLaser(Player *player, PlayerBullet *bullet);
     static i32 UpdatePlayerLaser(Player *player, PlayerBullet *bullet);
 
     static i32 DrawBulletWithTrail(Player *player, PlayerBullet *bullet);
 
-    static i32 OnMissileHit(Player *player, PlayerBullet *bullet,
-                            Float3 *pos);
-    static i32 SpawnHitParticles(Player *player, PlayerBullet *bullet,
-                                 Float3 *pos);
+    static i32 OnMissileHit(Player *player, PlayerBullet *bullet, ZunVec3 *pos);
+    static i32 SpawnHitParticles(Player *player, PlayerBullet *bullet, ZunVec3 *pos);
 
     i16 unused;
     u16 numLevels;
@@ -360,6 +434,53 @@ struct ShtData
     f32 speedFocus;
     f32 speedDiagonal;
     f32 speedDiagonalFocus;
-    ShtLevel levels[1];
+    ShtLevel *levels;
+    ShtEntry *entries;
 };
-C_ASSERT(sizeof(ShtData) == 0x3c);
+
+struct ShtRawEntry
+{
+    i16 fireInterval;
+    i16 fireOffset;
+    Float2 offset;
+    Float2 hitboxSize;
+    f32 angle;
+    f32 speed;
+    i16 damage;
+    i8 option;
+    i8 bulletState2;
+    i16 anmFileIdx;
+    i16 soundIdx;
+    u32 fireCallback;
+    u32 updateCallback;
+    u32 drawCallback;
+    u32 hitCallback;
+};
+static_assert(sizeof(ShtRawEntry) == 0x34);
+
+struct ShtRawLevel
+{
+    u32 entryOffset;
+    i32 requiredPower;
+};
+static_assert(sizeof(ShtRawLevel) == 0x8);
+
+struct ShtRawData
+{
+    i16 numLevels;
+    u16 entryCount;
+    f32 initialBombs;
+    i32 initialRespawnTimer;
+    f32 hitboxRadius;
+    f32 grabItemRadius;
+    f32 itemCollectSpeed;
+    f32 itemCollectRadius;
+    f32 cherryPenaltyMultiplier;
+    f32 pocY;
+    f32 speed;
+    f32 speedFocus;
+    f32 speedDiagonal;
+    f32 speedDiagonalFocus;
+    ShtRawLevel levels[];
+};
+static_assert(sizeof(ShtRawData) == 0x34);

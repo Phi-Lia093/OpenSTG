@@ -1,8 +1,9 @@
 #pragma once
 
-#include "AnmManager.hpp"
-#include "ZunResult.hpp"
+#include "AnmIdx.hpp"
+#include "AnmVm.hpp"
 #include "ZunBool.hpp"
+#include "ZunResult.hpp"
 
 #define TRANSITION_QUAD_ROWS 14
 #define TRANSITION_QUAD_COLS 12
@@ -101,16 +102,19 @@ struct MsgRawInstr
     u8 argsize;
     MsgRawInstrArgs args;
 };
+static_assert(sizeof(MsgRawInstr) == 0x10);
 
 struct MsgRawHeader
 {
     i32 numInstrs;
-    MsgRawInstr *instrs[1];
+    u32 offsets[];
 };
+static_assert(sizeof(MsgRawHeader) == 0x4);
 
 struct GuiFormattedText
 {
-    Float3 pos;
+    ZunVec3 pos;
+    ZunVec3 prevPos;
     i32 fmtArg;
     i32 displayArg;
     ZunTimer timer;
@@ -120,6 +124,16 @@ struct GuiMsgVm
 {
     GuiMsgVm();
 
+    void UpdatePrev()
+    {
+        portraits[0].UpdatePrev();
+        portraits[1].UpdatePrev();
+        dialogueLines[0].UpdatePrev();
+        dialogueLines[1].UpdatePrev();
+        introLines[0].UpdatePrev();
+        introLines[1].UpdatePrev();
+    }
+
     MsgRawHeader *msgFile;
     MsgRawInstr *curInstr;
     i32 currentMsgIdx;
@@ -128,8 +142,8 @@ struct GuiMsgVm
     AnmVm portraits[2];
     AnmVm dialogueLines[2];
     AnmVm introLines[2];
-    D3DCOLOR textColorsA[4];
-    D3DCOLOR textColorsB[4];
+    u32 textColorsA[4];
+    u32 textColorsB[4];
     u32 fontSize;
     u32 ignoreWaitCounter;
     u8 dialogueSkippable;
@@ -142,6 +156,38 @@ struct GuiImpl
     ZunResult DrawDialogue();
     void MsgRead(i32 msgIdx);
     ZunResult RunMsg();
+
+    void UpdatePrev()
+    {
+        for (int i = 0; i < 33; i++)
+        {
+            vms0[i].UpdatePrev();
+        }
+        for (int i = 0; i < 5; i++)
+        {
+            stageTextVm[i].UpdatePrev();
+        }
+        bombSpellcardPortrait.UpdatePrev();
+        enemySpellcardPortrait.UpdatePrev();
+        bombSpellcardDecorLeft.UpdatePrev();
+        enemySpellcardDecorHorizontalUp.UpdatePrev();
+        bombSpellcardDecorRight.UpdatePrev();
+        enemySpellcardDecorHorizontalDown.UpdatePrev();
+        bombSpellcardName.UpdatePrev();
+        enemySpellcardName.UpdatePrev();
+        bombSpellcardNameBg.UpdatePrev();
+        enemySpellcardNameBg.UpdatePrev();
+        stageClearBg.UpdatePrev();
+        loadingSprite.UpdatePrev();
+        stageTransitionSnapshotVm.UpdatePrev();
+        captureBonusVm.UpdatePrev();
+        spellcardBonusIndicator.UpdatePrev();
+        for (i32 i = 0; i < 168; i++)
+        {
+            transitionQuads[i].UpdatePrev();
+        }
+        msg.UpdatePrev();
+    }
 
     AnmVm vms0[33];
     u8 bossHealthBarState;
@@ -177,7 +223,6 @@ struct GuiImpl
     i32 clearCherryMax;
     i32 clearGraze;
 };
-C_ASSERT(sizeof(GuiImpl) == 0x20a30);
 
 struct Gui
 {
@@ -232,6 +277,17 @@ struct Gui
         return this->bossPresent;
     }
 
+    void UpdatePrev()
+    {
+        this->impl->UpdatePrev();
+        this->prevBossHealthBarAlpha = this->bossHealthBarAlpha;
+        this->prevBossHealthBarEased = this->bossHealthBarEased;
+        for (i32 i = 0; i < 8; i++)
+        {
+            this->prevBossHealthEased[i] = this->bossHealthEased[i];
+        }
+    }
+
     i32 frameCounter;
     union {
         u32 flags;
@@ -248,6 +304,7 @@ struct Gui
     f32 bombNameBarLength;
     f32 spellcardBarLength;
     u32 bossHealthBarAlpha;
+    u32 prevBossHealthBarAlpha;
     i32 bossLifeMarkers;
     i32 spellcardSecondsRemaining;
     i32 lastSpellcardSecondsRemaining;
@@ -255,10 +312,12 @@ struct Gui
     // pad 3
     f32 bossHealthBar;
     f32 bossHealthBarEased;
+    f32 prevBossHealthBarEased;
     i32 unused_30;
     f32 bossHealth[8];
     f32 bossHealthEased[8];
+    f32 prevBossHealthEased[8];
     u32 bossColor[8];
 };
-C_ASSERT(sizeof(Gui) == 0x94);
+
 extern Gui g_Gui;

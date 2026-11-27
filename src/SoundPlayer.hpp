@@ -1,10 +1,9 @@
 #pragma once
 
-#include <SDL3/SDL.h>
-
+#include "GameErrorContext.hpp"
 #include "ZunResult.hpp"
-#include "dsutil.hpp"
 #include "inttypes.hpp"
+#include "miniaudio.h"
 
 enum AudioOpcode
 {
@@ -44,6 +43,29 @@ enum SoundIdx
     SOUND_PAUSED = 37
 };
 
+struct ThWaveFormat
+{
+    u16 wFormatTag;
+    u16 nChannels;
+    u32 nSamplesPerSec;
+    u32 nAvgBytesPerSec;
+    u16 nBlockAlign;
+    u16 wBitsPerSample;
+    u16 cbSize;
+};
+static_assert(sizeof(ThWaveFormat) == 0x14);
+
+struct ThBgmFormat
+{
+    char name[16];
+    i32 startOffset;
+    u32 preloadAllocSize;
+    i32 introLength;
+    i32 totalLength;
+    ThWaveFormat format;
+};
+static_assert(sizeof(ThBgmFormat) == 0x34);
+
 struct SoundBufferIdxVolume
 {
     i32 bufferIdx;
@@ -58,31 +80,31 @@ struct SoundPlayerCommand
     i32 arg2;
     char string[256];
 };
-C_ASSERT(sizeof(SoundPlayerCommand) == 0x10c);
+
+struct ThBgmDataSource
+{
+    ma_data_source_base base;
+    ma_format format;
+    ma_uint32 channels;
+    ma_uint32 sampleRate;
+    ThBgmFormat *pFmt;
+    bool isMemory;
+
+    SDL_IOStream *file;
+    const u8 *pData;
+    u32 dataSize;
+    u32 currentOffset;
+    u32 segmentBytesRemaining;
+};
 
 #define MAX_SOUND_COMMANDS 31
 
-// The audio front end the game talks to. This struct used to mirror the
-// original's memory layout down to the last DirectSound pointer; with the
-// playback layer moved to SDL3 the layout no longer matters, only the member
-// names (Supervisor.cpp still sets bgmArchivePath before PlayLoadedAudio).
 struct SoundPlayer
 {
-    SoundPlayer()
-    {
-        memset(this, 0, sizeof(SoundPlayer));
-        for (i32 i = 0; i < 128; i++)
-        {
-            this->unusedSoundVolRelated[i] = -1;
-        }
-    }
+    SoundPlayer();
 
-    static DWORD __stdcall BackgroundMusicPlayerThread(LPVOID lpThreadParameter);
-    void ApplySoundVolume(i32 idx);
     i32 GetFmtIndexByName(const char *name);
-    static WAVEFORMATEX *GetWavFormatData(u8 *soundData, const char *formatString,
-                                          i32 *formatSize, u32 fileSizeExcludingFormat);
-    ZunResult InitializeDSound(HWND gameWindow);
+    ZunResult InitializeSound();
     ZunResult InitSoundBuffers();
     ZunResult LoadBGM(i32 idx);
     ZunResult LoadFmt(const char *path);
@@ -98,40 +120,36 @@ struct SoundPlayer
 
     void FadeOut(f32 duration)
     {
+        g_GameErrorContext.Log("%f\n", duration);
         if (this->backgroundMusic)
         {
-            this->backgroundMusic->FadeOut(duration);
+            ma_sound_set_fade_start_in_milliseconds(
+                this->backgroundMusic, -1, 0, duration * 1000.0f,
+                ma_engine_get_time_in_milliseconds(this->engine));
         }
     }
 
-    // One CSound per entry of g_SFXList (see SoundPlayer.cpp), each holding the
-    // decoded WAV and its own SDL audio stream.
-    CSound *sounds[128];
-    // Per game-sound settings from SOUND_BUFFER_IDX_VOL: which g_SFXList entry
-    // to play and how loud. Replaces the array of pre-configured DirectSound
-    // duplicate buffers; the volume is applied to the CSound instead.
-    SoundBufferIdxVolume *duplicateSoundBuffers[128];
+    ma_engine *engine;
+    ma_device *device;
+    ma_audio_buffer *duplicateSfxData[128];
+    ma_audio_buffer *sfxData[128];
+    void *sfxPCMData[128];
+    ma_uint64 sfxFrameCount[128];
+    ma_sound *soundBuffers[128];
     i32 unusedSoundVolRelated[128];
-    // The BGM stream runs on its own thread, exactly like the original's
-    // DirectSound notification thread; the event releases it once per tick.
-    HANDLE backgroundMusicUpdateEvent;
-    HWND gameWindow;
-    CSoundManager *manager;
-    DWORD backgroundMusicThreadId; // ZUN name: m_dwNotifyThreadID
-    HANDLE backgroundMusicThreadHandle;
-    u32 unused_61c;
     i32 soundQueue[5];
     ThBgmFormat *bgmPreloadFmtData[16];
-    LPBYTE bgmPreloadData[16];
-    LPBYTE bgmPreloadDataCursor[16];
-    DWORD bgmPreloadAllocSizes[16];
+    u8 *bgmPreloadData[16];
+    u8 *bgmPreloadDataCursor[16];
+    u32 bgmPreloadAllocSizes[16];
     i32 curBgmIdx;
     ThBgmFormat *bgmFmtData;
     SoundPlayerCommand commandQueue[MAX_SOUND_COMMANDS + 1];
     char bgmFileNames[16][256];
-    char bgmArchivePath[256];
-    CStreamingSound *backgroundMusic;
-    i32 unused_39c4;
+    char bgmArchivePath[512];
+    ThBgmDataSource *bgmDataSource;
+    ma_sound *backgroundMusic;
     i32 bgmSeekOffset;
 };
+
 extern SoundPlayer g_SoundPlayer;

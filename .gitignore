@@ -1,30 +1,29 @@
-# Original game files are never distributed by this project. The build copies them
-# into build/ from .tools/, which is ignored below.
-*.dat
-*.exe
-*.cfg
-*.zip
-*.rar
+# Build output.
+build/
+assets/
 
-# Local copies of adjacent-version source repositories.
-/_references/
+# Local toolchains and SDKs. None of these are source: SDL packages, the retail data
+# files and the font are downloaded or copied in separately.
+.tools/
 
-# Generated and local reverse-engineering state.
-/.analysis/
-/.tools/
-/build/
-/local/
-/.venv/
-/reccmp-user.yml
-/compile_commands.json
-*.gpr
-*.rep/
-*.idb
-*.i64
-*.pyc
+# Python bytecode from the build scripts.
 __pycache__/
+scripts/__pycache__/
 
-# Editor swap files.
-*.swp
-*.swo
-*~
+# Original game executables, which this project never distributes.
+resources/th07.exe
+resources/custom.exe
+
+# Editor and tooling scratch.
+*.gpr
+*.lock
+*.rep
+.venv*
+compile_commands.json
+reccmp-user.yml
+reccmp-build.yml
+reccmp-gui.yml
+
+# Generated localisation tables.
+src/th07/i18n.hpp
+src/custom/i18n.hpp

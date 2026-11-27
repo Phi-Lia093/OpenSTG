@@ -1,88 +1,52 @@
-#include <stdio.h>
 #include "Stage.hpp"
 
+#include "AnmIdx.hpp"
 #include "AnmManager.hpp"
+#include "Chain.hpp"
 #include "EffectManager.hpp"
+#include "FileSystem.hpp"
+#include "GameErrorContext.hpp"
 #include "GameManager.hpp"
-#include "Global.hpp"
+#include "GameWindow.hpp"
 #include "Gui.hpp"
 #include "ScreenEffect.hpp"
 #include "Supervisor.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
-#include "i18n.hpp"
 #include "utils.hpp"
 
-// GLOBAL: TH07 0x0049f588
 StageAnms g_EnemyAnmStageFiles[9] = {
-    {"dummy", "dummy"},
-    // STRING: TH07 0x00497ffc
-    {"data/stg1enm.anm", NULL},
-    // STRING: TH07 0x00497fe8
-    {"data/stg2enm.anm", NULL},
-    // STRING: TH07 0x00497fd4
-    {"data/stg3enm.anm", NULL},
-    // STRING: TH07 0x00497fc0
-    {"data/stg4enm.anm", NULL},
-    // STRING: TH07 0x00497fac
-    {"data/stg5enm.anm", NULL},
-    // STRING: TH07 0x00497f98
-    {"data/stg6enm.anm", NULL},
-    // STRING: TH07 0x00497f84
-    {"data/stg7enm.anm", NULL},
-    // STRING: TH07 0x00497f70
-    {"data/stg8enm.anm", NULL},
+    {"dummy", "dummy"},         {"data/stg1enm.anm", NULL}, {"data/stg2enm.anm", NULL},
+    {"data/stg3enm.anm", NULL}, {"data/stg4enm.anm", NULL}, {"data/stg5enm.anm", NULL},
+    {"data/stg6enm.anm", NULL}, {"data/stg7enm.anm", NULL}, {"data/stg8enm.anm", NULL},
 };
 
-// GLOBAL: TH07 0x0049f64c
 const char *g_StageFiles[9] = {
-    "dummy",
-    // STRING: TH07 0x00498a04
-    "data/stage1.std",
-    // STRING: TH07 0x004989f4
-    "data/stage2.std",
-    // STRING: TH07 0x004989e4
-    "data/stage3.std",
-    // STRING: TH07 0x004989d4
-    "data/stage4.std",
-    // STRING: TH07 0x004989c4
-    "data/stage5.std",
-    // STRING: TH07 0x004989b4
-    "data/stage6.std",
-    // STRING: TH07 0x004989a4
-    "data/stage7.std",
-    // STRING: TH07 0x00498994
-    "data/stage8.std",
+    "dummy",           "data/stage1.std", "data/stage2.std", "data/stage3.std", "data/stage4.std",
+    "data/stage5.std", "data/stage6.std", "data/stage7.std", "data/stage8.std",
 };
 
-// GLOBAL: TH07 0x01347ac0
 ChainElem g_UnusedChain;
 
-// GLOBAL: TH07 0x01347ae0
 ChainElem g_StageOnDrawHighPrioChain;
 
-// GLOBAL: TH07 0x01347b00
 Stage g_Stage;
 
-// GLOBAL: TH07 0x0134cdb4
 ChainElem g_StageOnDrawLowPrioChain;
 
-// GLOBAL: TH07 0x0134cdd4
 ChainElem g_StageCalcChain;
 
-// FUNCTION: TH07 0x00405080
 Stage::Stage()
 {
-    memset(this, NULL, sizeof(Stage));
-    this->cam.pos = D3DXVECTOR3(0.0f, 0.0f, 1000.0f);
-    this->cam.lookAt = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-    this->cam.up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+    memset(this, 0, sizeof(Stage));
+    this->cam.pos = ZunVec3(0.0f, 0.0f, 1000.0f);
+    this->cam.lookAt = ZunVec3(0.0f, 0.0f, 0.0f);
+    this->cam.up = ZunVec3(0.0f, 1.0f, 0.0f);
     this->cam.fov = ZUN_PI / 6.0f;
     this->camEnd = this->cam;
     this->camStart = this->cam;
 }
 
-// FUNCTION: TH07 0x004052d0
 f32 InterpCubic(f32 p0, f32 p1, f32 p2, f32 p3, f32 t)
 {
     f32 v[4];
@@ -94,27 +58,23 @@ f32 InterpCubic(f32 p0, f32 p1, f32 p2, f32 p3, f32 t)
     return v[0] * p0 + v[2] * p1 + v[1] * p2 + v[3] * p3;
 }
 
-// FUNCTION: TH07 0x00405370
-void Stage::UpdateScriptAndCamera(Stage *stage, i32 camIdx,
-                                  D3DXVECTOR3 *output, D3DXVECTOR3 *start,
-                                  D3DXVECTOR3 *end, D3DXVECTOR3 *control1,
-                                  D3DXVECTOR3 *control2)
+void Stage::UpdateScriptAndCamera(Stage *stage, i32 param_2, ZunVec3 *param_3, ZunVec3 *param_4,
+                                  ZunVec3 *param_5, ZunVec3 *param_6, ZunVec3 *param_7)
 {
     f32 t;
 
-    if (stage->timers[camIdx] < stage->timersMax[camIdx])
+    if (stage->timers[param_2] < stage->timersMax[param_2])
     {
-        stage->timers[camIdx]++;
-        t = stage->timers[camIdx].AsFloat() /
-            (f32)stage->timersMax[camIdx];
+        stage->timers[param_2]++;
+        t = stage->timers[param_2].AsFloat() / (f32)stage->timersMax[param_2];
     }
     else
     {
-        stage->timers[camIdx] = stage->timersMax[camIdx];
+        stage->timers[param_2] = stage->timersMax[param_2];
         t = 1.0f;
-        stage->timersMax[camIdx] = 0;
+        stage->timersMax[param_2] = 0;
     }
-    switch (stage->easeModes[camIdx])
+    switch (stage->easeModes[param_2])
     {
     case STAGE_EASE_OUT_QUAD:
         t = 1.0f - t;
@@ -137,27 +97,42 @@ void Stage::UpdateScriptAndCamera(Stage *stage, i32 camIdx,
     case STAGE_EASE_IN_QUART:
         t = t * t * t * t;
     }
-    if (stage->easeModes[camIdx] != STAGE_EASE_CUBIC_INTERP)
+    if (stage->easeModes[param_2] != STAGE_EASE_CUBIC_INTERP)
     {
-        *output = *end - *start;
-        *output = t * *output + *start;
+        *param_3 = *param_5 - *param_4;
+        *param_3 = t * *param_3 + *param_4;
     }
     else
     {
-        output->x =
-            InterpCubic(start->x, end->x, control1->x, control2->x, t);
-        output->y =
-            InterpCubic(start->y, end->y, control1->y, control2->y, t);
-        output->z =
-            InterpCubic(start->z, end->z, control1->z, control2->z, t);
+        param_3->x = InterpCubic(param_4->x, param_5->x, param_6->x, param_7->x, t);
+        param_3->y = InterpCubic(param_4->y, param_5->y, param_6->y, param_7->y, t);
+        param_3->z = InterpCubic(param_4->z, param_5->z, param_6->z, param_7->z, t);
     }
 }
 
-// FUNCTION: TH07 0x00405690
 u32 Stage::OnUpdate(Stage *arg)
 {
-    D3DXVECTOR3 pos;
+    ZunVec3 pos;
     StdRawInstr *curInstr;
+
+    for (i32 i = 0; i < arg->quadCount; i++)
+    {
+        arg->quadVms[i].UpdatePrev();
+    }
+    arg->vm1.UpdatePrev();
+    arg->vm2.UpdatePrev();
+    for (i32 i = 0; i < 32; i++)
+    {
+        arg->spellcardVms[i].UpdatePrev();
+    }
+
+    arg->prevPos = arg->pos;
+    arg->prevCam = arg->cam;
+
+    arg->color2.bytes.a = 0;
+    arg->color2.bytes.r = 128;
+    arg->color2.bytes.g = 128;
+    arg->color2.bytes.b = 128;
 
     if (!arg->stdData)
     {
@@ -168,8 +143,7 @@ u32 Stage::OnUpdate(Stage *arg)
         i32 instrIdx = 0;
         curInstr = arg->beginningOfScript;
         arg->instructionIndex = 0;
-        while ((curInstr->opcode != 31 ||
-                arg->scriptWaitTime != curInstr->args.args[0].i) &&
+        while ((curInstr->opcode != 31 || arg->scriptWaitTime != curInstr->args.args[0].i) &&
                curInstr->frame != -1)
         {
             curInstr++;
@@ -195,6 +169,7 @@ loop_begin:
                 arg->pos.x = arg->positionInterpInitial.x;
                 arg->pos.y = arg->positionInterpInitial.y;
                 arg->pos.z = arg->positionInterpInitial.z;
+                arg->prevPos = arg->pos;
             }
             else
             {
@@ -227,7 +202,7 @@ loop_begin:
         case STD_CAM_POS:
             if (arg->cameraTeleported)
             {
-                D3DXVECTOR3 diff = *curInstr->args.AsVec() - arg->camEnd.pos;
+                ZunVec3 diff = *curInstr->args.AsVec() - arg->camEnd.pos;
                 EffectManager::ShiftEffectsAfterCameraTeleport(&diff);
                 arg->cameraTeleported = 0;
             }
@@ -236,6 +211,7 @@ loop_begin:
             if (arg->timersMax[0] == 0)
             {
                 arg->cam.pos = *curInstr->args.AsVec();
+                arg->prevCam.pos = arg->cam.pos;
             }
             break;
         case STD_CAM_POS_INTERP:
@@ -297,6 +273,7 @@ loop_begin:
             arg->scriptTime = curInstr->args.args[1].i;
             arg->timersMax[0] = 0;
             arg->cameraTeleported = 1;
+            arg->prevCam = arg->cam;
             goto loop_begin;
         case STD_CAM_POS_INTERP_START:
             arg->camStart.pos = *curInstr->args.AsVec();
@@ -352,7 +329,8 @@ loop_begin:
         case STD_BG_SCRIPT1:
             if (curInstr->args.args[0].i >= 0)
             {
-                g_AnmManager->ExecuteAnmIdx(&arg->vm1, curInstr->args.args[0].i + ANM_OFFSET_STAGE_BG);
+                g_AnmManager->ExecuteAnmIdx(&arg->vm1,
+                                            curInstr->args.args[0].i + ANM_OFFSET_STAGE_BG);
             }
             else
             {
@@ -362,7 +340,8 @@ loop_begin:
         case STD_BG_SCRIPT2:
             if (curInstr->args.args[0].i >= 0)
             {
-                g_AnmManager->ExecuteAnmIdx(&arg->vm2, curInstr->args.args[0].i + ANM_OFFSET_STAGE_BG);
+                g_AnmManager->ExecuteAnmIdx(&arg->vm2,
+                                            curInstr->args.args[0].i + ANM_OFFSET_STAGE_BG);
             }
             else
             {
@@ -377,9 +356,8 @@ LAB_004061aa: {
     i32 camIdx = 0;
     if (arg->timersMax[camIdx] != 0)
     {
-        UpdateScriptAndCamera(arg, camIdx, &arg->cam.pos, &arg->camStart.pos,
-                              &arg->camEnd.pos, &arg->camTangentStart.pos,
-                              &arg->camTangentEnd.pos);
+        UpdateScriptAndCamera(arg, camIdx, &arg->cam.pos, &arg->camStart.pos, &arg->camEnd.pos,
+                              &arg->camTangentStart.pos, &arg->camTangentEnd.pos);
     }
     camIdx = 1;
     if (arg->timersMax[camIdx] != 0)
@@ -391,13 +369,11 @@ LAB_004061aa: {
     camIdx = 2;
     if (arg->timersMax[camIdx] != 0)
     {
-        UpdateScriptAndCamera(arg, camIdx, &arg->cam.up, &arg->camStart.up,
-                              &arg->camEnd.up, &arg->camTangentStart.up,
-                              &arg->camTangentEnd.up);
+        UpdateScriptAndCamera(arg, camIdx, &arg->cam.up, &arg->camStart.up, &arg->camEnd.up,
+                              &arg->camTangentStart.up, &arg->camTangentEnd.up);
     }
     camIdx = 3;
 
-#pragma var_order(fovDiff, t)
     if (arg->timersMax[camIdx] != 0)
     {
         f32 t;
@@ -406,8 +382,7 @@ LAB_004061aa: {
         if (arg->timers[camIdx] < arg->timersMax[camIdx])
         {
             arg->timers[camIdx]++;
-            t = arg->timers[camIdx].AsFloat() /
-                (f32)arg->timersMax[camIdx];
+            t = arg->timers[camIdx].AsFloat() / (f32)arg->timersMax[camIdx];
         }
         else
         {
@@ -442,12 +417,11 @@ LAB_004061aa: {
         arg->cam.fov = fovDiff * t + arg->camStart.fov;
     }
 }
-    D3DXVec3Normalize(&arg->cam.lookAtDir, &arg->cam.lookAt);
+    arg->cam.lookAtDir.Normalize(&arg->cam.lookAt);
     if (arg->skyFogInterpDuration != 0)
     {
         arg->skyFogInterpTimer++;
-        f32 t = arg->skyFogInterpTimer.AsFloat() /
-                (f32)arg->skyFogInterpDuration;
+        f32 t = arg->skyFogInterpTimer.AsFloat() / (f32)arg->skyFogInterpDuration;
         if (t >= 1.0f)
         {
             t = 1.0f;
@@ -455,17 +429,13 @@ LAB_004061aa: {
         for (i32 i = 0; i < 4; i++)
         {
             arg->skyFog.color.raw[i] =
-                (u8)(((f32)arg->fogStart.color.raw[i] -
-                      (f32)arg->fogEnd.color.raw[i]) *
-                         t +
+                (u8)(((f32)arg->fogStart.color.raw[i] - (f32)arg->fogEnd.color.raw[i]) * t +
                      (f32)arg->fogEnd.color.raw[i]);
         }
         arg->skyFog.nearPlane =
-            (arg->fogStart.nearPlane - arg->fogEnd.nearPlane) * t +
-            arg->fogEnd.nearPlane;
+            (arg->fogStart.nearPlane - arg->fogEnd.nearPlane) * t + arg->fogEnd.nearPlane;
         arg->skyFog.farPlane =
-            (arg->fogStart.farPlane - arg->fogEnd.farPlane) * t +
-            arg->fogEnd.farPlane;
+            (arg->fogStart.farPlane - arg->fogEnd.farPlane) * t + arg->fogEnd.farPlane;
 
         if (arg->skyFogInterpTimer >= arg->skyFogInterpDuration)
         {
@@ -497,6 +467,9 @@ LAB_004061aa: {
     {
         g_AnmManager->ExecuteScript(&arg->vm2);
     }
+    arg->cam.right.Cross(&arg->cam.lookAt, &arg->cam.up);
+    arg->cam.right.Normalize(&arg->cam.right);
+    arg->cam.lookAtDir.Normalize(&arg->cam.lookAt);
     arg->stageFrameCounter++;
     if (arg->stageFrameCounter % 500 == 250)
     {
@@ -508,58 +481,33 @@ LAB_004061aa: {
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-// FUNCTION: TH07 0x00406930
-void Stage::SmoothBlendColor(ZunColor color)
+void Stage::SmoothBlendColor(ZunColor param_1)
 {
-    ZunColor tmpColor;
+    ZunColor color;
 
     if (!this->color2.bytes.a)
     {
-        this->color2 = color;
+        this->color2 = param_1;
     }
     else
     {
-        tmpColor = color;
-        this->color2.bytes.r =
-            (u8)((tmpColor.bytes.r + (u32)this->color2.bytes.r) >> 1);
-        this->color2.bytes.g =
-            (u8)((tmpColor.bytes.g + (u32)this->color2.bytes.g) >> 1);
-        this->color2.bytes.b =
-            (u8)((tmpColor.bytes.b + (u32)this->color2.bytes.b) >> 1);
-        this->color2.bytes.a =
-            (u8)((tmpColor.bytes.a + (u32)this->color2.bytes.a) >> 1);
+        color = param_1;
+        this->color2.bytes.r = (u8)((color.bytes.r + (u32)this->color2.bytes.r) >> 1);
+        this->color2.bytes.g = (u8)((color.bytes.g + (u32)this->color2.bytes.g) >> 1);
+        this->color2.bytes.b = (u8)((color.bytes.b + (u32)this->color2.bytes.b) >> 1);
+        this->color2.bytes.a = (u8)((color.bytes.a + (u32)this->color2.bytes.a) >> 1);
     }
 }
 
-// FUNCTION: TH07 0x004069d0
 u32 Stage::OnDrawHighPrio(Stage *arg)
 {
     ZunColor fogColor;
-    D3DVIEWPORT8 viewport;
-
-    {
-        static u32 stageDrawLog;
-        if (stageDrawLog < 3)
-        {
-            stageDrawLog++;
-            FILE *log = fopen("stage.txt", "ab");
-            if (log)
-            {
-                fprintf(log, "OnDrawHighPrio color=%08x clearBg=%d vm1.active=%d vm2.active=%d\n",
-                        arg->color, (i32)arg->clearBackground,
-                        (i32)arg->vm1.activeSpriteIdx, (i32)arg->vm2.activeSpriteIdx);
-                fclose(log);
-            }
-            // Dump the stage background atlas through the CPU copy, which is the only
-            // way to see what the GPU is sampling.
-            g_AnmManager->DumpTexturePixels(5, "stage_bg.ppm");
-        }
-    }
+    ZunViewport viewport;
 
     g_AnmManager->ResetVertexBuffer();
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
-    g_AnmManager->SetTexture(NULL);
+    g_AnmManager->SetTexture(0);
     g_AnmManager->SetColorOp(255);
     g_AnmManager->SetBlendMode(255);
     g_AnmManager->SetZWriteDisable(255);
@@ -570,81 +518,59 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
         g_Supervisor.DisableFog();
     }
     g_AnmManager->Flush();
+    if (g_GameManager.notInMenu)
+    {
+        g_Supervisor.viewport.x = (u32)g_GameManager.arcadeRegionTopLeftPos.x;
+        g_Supervisor.viewport.y = (u32)g_GameManager.arcadeRegionTopLeftPos.y;
+        g_Supervisor.viewport.width = (u32)g_GameManager.arcadeRegionSize.x;
+        g_Supervisor.viewport.height = (u32)g_GameManager.arcadeRegionSize.y;
+        g_Supervisor.viewport.minZ = 0.0f;
+        g_Supervisor.viewport.maxZ = 1.0f;
+        g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+    }
     if (arg->clearBackground)
     {
-        // Clear only the playfield rectangle, leaving the rest of the screen alone.
-        RendererClearRegion(32, 16, 384, 448, 0.0f, 0.0f, 0.0f);
+        viewport.x = 32;
+        viewport.y = 16;
+        viewport.width = 384;
+        viewport.height = 448;
+        g_Supervisor.gfxDevice->SetViewport(viewport);
+        g_Supervisor.gfxDevice->SetClearColor({0xff000000});
+        g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER);
         arg->clearBackground = FALSE;
     }
-    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
+    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
     if (arg->color2.bytes.a > 0)
     {
         g_AnmManager->SetColorWithMulEnabled(arg->color2.color);
     }
-    arg->color2.bytes.a = 0;
-    arg->color2.bytes.r = 128;
-    arg->color2.bytes.g = 128;
-    arg->color2.bytes.b = 128;
     if (arg->spellCardState <= SPELLCARD_STATE_STARTING)
     {
         if (!g_Gui.IsStageFinished())
         {
             if (arg->vm1.activeSpriteIdx > 0)
             {
-                g_AnmManager->DrawAndFlush(&arg->vm1);
+                g_AnmManager->DrawInterpAndFlush(&arg->vm1);
             }
             if (arg->vm2.activeSpriteIdx > 0)
             {
-                g_AnmManager->DrawAndFlush(&arg->vm2);
+                g_AnmManager->DrawInterpAndFlush(&arg->vm2);
             }
         }
     }
-    // A non-zero colour clears the whole target, otherwise only the depth buffer.
     if (arg->color != 0)
     {
-        {
-            static u32 skyLog;
-            if (skyLog < 5)
-            {
-                skyLog++;
-                FILE *log = fopen("clear_count.txt", "ab");
-                if (log)
-                {
-                    fprintf(log, "stage sky clear color=%08x\n", arg->color);
-                    fclose(log);
-                }
-            }
-        }
-        RendererClear(((arg->color >> 16) & 0xff) / 255.0f,
-                      ((arg->color >> 8) & 0xff) / 255.0f,
-                      (arg->color & 0xff) / 255.0f);
+        g_Supervisor.gfxDevice->SetClearColor({arg->color});
+        g_Supervisor.gfxDevice->Clear(CLEAR_COLOR_BUFFER | CLEAR_DEPTH_BUFFER);
     }
     else
     {
-        {
-            static u32 depthLog;
-            if (depthLog < 5)
-            {
-                depthLog++;
-                FILE *log = fopen("clear_count.txt", "ab");
-                if (log)
-                {
-                    fprintf(log, "stage depth-only clear\n");
-                    fclose(log);
-                }
-            }
-        }
-        RendererClearDepth();
+        g_Supervisor.gfxDevice->Clear(CLEAR_DEPTH_BUFFER);
     }
-    RendererSetZWrite(true);
-    // EXPERIMENT: depth test off, to see whether the background layers are hiding each
-    // other rather than not drawing at all.
-    RendererSetZWrite(false);
-    // Fog colour and planes are kept in the stage state because the background
-    // shader path reads them; the renderer itself does not apply per-vertex fog.
+    g_Supervisor.gfxDevice->SetDepthFunc(DEPTH_FUNC_LEQUAL);
     if (!g_AnmManager->colorMulEnabled)
     {
-        fogColor.color = arg->skyFog.color.color;
+        g_Supervisor.gfxDevice->SetFogColor(arg->skyFog.color);
     }
     else
     {
@@ -652,7 +578,9 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
         fogColor.bytes.r = ZunColor::Multiply(fogColor.bytes.r, g_AnmManager->color.bytes.r);
         fogColor.bytes.g = ZunColor::Multiply(fogColor.bytes.g, g_AnmManager->color.bytes.g);
         fogColor.bytes.b = ZunColor::Multiply(fogColor.bytes.b, g_AnmManager->color.bytes.b);
+        g_Supervisor.gfxDevice->SetFogColor(fogColor);
     }
+    g_Supervisor.gfxDevice->SetFogRange(arg->skyFog.nearPlane, arg->skyFog.farPlane);
     if (!g_Supervisor.cfg.disableFog)
     {
         g_Supervisor.EnableFog();
@@ -668,14 +596,11 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-#pragma var_order(fog, alpha, rect, i)
-// FUNCTION: TH07 0x00406de0
 u32 Stage::OnDrawLowPrio(Stage *arg)
 {
     i32 i;
     ZunRect rect;
     i32 alpha;
-    f32 fog;
 
     if (arg->spellCardState <= SPELLCARD_STATE_STARTING)
     {
@@ -696,13 +621,17 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
                 rect.bottom = 464.0f;
                 alpha = arg->ticksSinceSpellcardStarted * 255 / 60;
                 g_AnmManager->Flush();
-                RendererSetZWrite(false);
+                g_Supervisor.gfxDevice->SetDepthFunc(DEPTH_FUNC_ALWAYS);
+                if (!g_Supervisor.cfg.disableFog)
+                {
+                    g_Supervisor.gfxDevice->Disable(CAPS_FOG);
+                }
                 ScreenEffect::DrawSquare(&rect, alpha << 24);
             }
         }
     }
     g_AnmManager->Flush();
-    RendererSetZWrite(false);
+    g_Supervisor.gfxDevice->SetDepthFunc(DEPTH_FUNC_ALWAYS);
     if (!g_Supervisor.cfg.disableFog)
     {
         g_Supervisor.DisableFog();
@@ -711,21 +640,20 @@ u32 Stage::OnDrawLowPrio(Stage *arg)
     {
         for (i = 0; i < arg->numSpellcardVms; i++)
         {
-            g_AnmManager->DrawAndFlush(&arg->spellcardVms[i]);
+            g_AnmManager->DrawInterpAndFlush(&arg->spellcardVms[i]);
         }
     }
     AnmManager::SetCameraModeStatic(g_AnmManager, 0);
     arg->SetupCameraStageBackground();
-    RendererSetViewport(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT);
-    if (!arg->isDarkening)
-    {
-        g_AnmManager->SetColor(0x80808080);
-    }
+    g_Supervisor.gfxDevice->SetViewport(g_Supervisor.viewport);
+    g_Supervisor.gfxDevice->SetFogRange(1000.0f, 2000.0f);
+
+    g_AnmManager->SetColor(0x80808080);
     arg->isDarkening = FALSE;
+
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-// FUNCTION: TH07 0x00407000
 ZunResult Stage::AddedCallback(Stage *arg)
 {
     i32 i;
@@ -740,75 +668,86 @@ ZunResult Stage::AddedCallback(Stage *arg)
     switch (g_GameManager.currentStage)
     {
     case STAGE1:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg1bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg1bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case STAGE2:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg2bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg2bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case STAGE3:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg3bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg3bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case STAGE4:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg4bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg4bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
 
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG2, "data/stg4bg2.anm", ANM_OFFSET_STAGE4_BG2) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG2, "data/stg4bg2.anm",
+                                   ANM_OFFSET_STAGE4_BG2) != ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
 
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG3, "data/stg4bg3.anm", ANM_OFFSET_STAGE4_BG3) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG3, "data/stg4bg3.anm",
+                                   ANM_OFFSET_STAGE4_BG3) != ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
 
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG4, "data/stg4bg4.anm", ANM_OFFSET_STAGE4_BG4) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG4, "data/stg4bg4.anm",
+                                   ANM_OFFSET_STAGE4_BG4) != ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
 
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG5, "data/stg4bg5.anm", ANM_OFFSET_STAGE4_BG5) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE4_BG5, "data/stg4bg5.anm",
+                                   ANM_OFFSET_STAGE4_BG5) != ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case STAGE5:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg5bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg5bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case STAGE6:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg6bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg6bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case EXTRASTAGE:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg7bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg7bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
         break;
     case PHANTASMSTAGE:
-        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg8bg.anm", ANM_OFFSET_STAGE_BG) != ZUN_SUCCESS)
+        if (g_AnmManager->LoadAnms(ANM_FILE_STAGE_BG, "data/stg8bg.anm", ANM_OFFSET_STAGE_BG) !=
+            ZUN_SUCCESS)
         {
             return ZUN_ERROR;
         }
     }
-    if (arg->LoadStageData(g_StageFiles[g_GameManager.currentStage]) !=
-        ZUN_SUCCESS)
+    if (arg->LoadStageData(g_StageFiles[g_GameManager.currentStage]) != ZUN_SUCCESS)
     {
         return ZUN_ERROR;
     }
@@ -816,10 +755,11 @@ ZunResult Stage::AddedCallback(Stage *arg)
     arg->skyFog.color.color = 0xff000000;
     arg->skyFog.nearPlane = 200.0f;
     arg->skyFog.farPlane = 500.0f;
-    arg->cam.pos = D3DXVECTOR3(0.0f, 0.0f, 1000.0f);
-    arg->cam.lookAt = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-    arg->cam.up = D3DXVECTOR3(0.0f, 1.0f, 0.0f);
+    arg->cam.pos = ZunVec3(0.0f, 0.0f, 1000.0f);
+    arg->cam.lookAt = ZunVec3(0.0f, 0.0f, 0.0f);
+    arg->cam.up = ZunVec3(0.0f, 1.0f, 0.0f);
     arg->cam.fov = ZUN_PI / 6.0f;
+    arg->prevCam = arg->cam;
     arg->camEnd = arg->cam;
     arg->camStart = arg->cam;
     for (i = 0; i < ARRAY_SIZE_SIGNED(arg->timers); i++)
@@ -831,7 +771,6 @@ ZunResult Stage::AddedCallback(Stage *arg)
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x00407410
 ZunResult Stage::DeletedCallback(Stage *arg)
 {
     g_AnmManager->ReleaseAnm(ANM_FILE_STAGE_BG);
@@ -839,12 +778,12 @@ ZunResult Stage::DeletedCallback(Stage *arg)
     g_AnmManager->ReleaseAnm(ANM_FILE_STAGE4_BG3);
     g_AnmManager->ReleaseAnm(ANM_FILE_STAGE4_BG4);
     g_AnmManager->ReleaseAnm(ANM_FILE_STAGE4_BG5);
+    SAFE_DELETE_ARRAY(arg->objects);
     SAFE_FREE(arg->quadVms);
     SAFE_FREE(arg->stdData);
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x004074c0
 ZunResult Stage::RegisterChain(i32 stage)
 {
     Stage *mgr = &g_Stage;
@@ -876,7 +815,6 @@ ZunResult Stage::RegisterChain(i32 stage)
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x004075d0
 void Stage::CutChain()
 {
     g_Chain.Cut(&g_StageCalcChain);
@@ -884,8 +822,6 @@ void Stage::CutChain()
     g_Chain.Cut(&g_StageOnDrawLowPrioChain);
 }
 
-#pragma var_order(vmIdx, i, obj, quad)
-// FUNCTION: TH07 0x00407610
 ZunResult Stage::LoadStageData(const char *stdPath)
 {
     StdRawQuadBasic *quad;
@@ -896,23 +832,22 @@ ZunResult Stage::LoadStageData(const char *stdPath)
     this->stdData = (StdRawHeader *)FileSystem::OpenFile(stdPath, 0);
     if (!this->stdData)
     {
-        g_GameErrorContext.Log(TH_ERR_STD_LOAD_FAIL);
+        g_GameErrorContext.Log("ステージデータが見つかりません。データが壊れています\n");
         return ZUN_ERROR;
     }
 
     this->objectsCount = this->stdData->objectsCount;
     this->quadCount = this->stdData->quadCount;
-    this->objectInstances =
-        (StdRawInstance *)(this->stdData->facesOffset + (i32)this->stdData);
-    this->beginningOfScript =
-        (StdRawInstr *)(this->stdData->scriptOffset + (i32)this->stdData);
-    this->objects = (StdRawObject **)(this->stdData + 1);
+    this->objectInstances = (StdRawInstance *)(this->stdData->facesOffset + (u8 *)this->stdData);
+    this->beginningOfScript = (StdRawInstr *)(this->stdData->scriptOffset + (u8 *)this->stdData);
+
+    u32 *offsets = (u32 *)(this->stdData + 1);
+    this->objects = new StdRawObject *[this->objectsCount];
     for (i = 0; i < this->objectsCount; i++)
     {
-        this->objects[i] =
-            (StdRawObject *)((i32)this->objects[i] + (i32)this->stdData);
+        this->objects[i] = (StdRawObject *)((u8 *)this->stdData + offsets[i]);
     }
-    this->quadVms = (AnmVm *)ZUN_ALLOC(this->quadCount * sizeof(AnmVm));
+    this->quadVms = (AnmVm *)malloc(this->quadCount * sizeof(AnmVm));
     for (i = 0, vmIdx = 0; i < this->objectsCount; i++)
     {
         obj = this->objects[i];
@@ -923,14 +858,12 @@ ZunResult Stage::LoadStageData(const char *stdPath)
             g_AnmManager->ExecuteAnmIdx(&this->quadVms[vmIdx],
                                         quad->anmScript + ANM_OFFSET_STAGE_BG);
             quad->vmIndex = vmIdx++;
-            quad = (StdRawQuadBasic *)((i32)quad + quad->byteSize);
+            quad = (StdRawQuadBasic *)((u8 *)quad + quad->byteSize);
         }
     }
     return ZUN_SUCCESS;
 }
 
-#pragma var_order(unused, vmCount, i, vm, object, quad)
-// FUNCTION: TH07 0x004077f0
 ZunResult Stage::UpdateObjects()
 {
     StdRawQuadBasic *quad;
@@ -938,7 +871,6 @@ ZunResult Stage::UpdateObjects()
     AnmVm *vm;
     i32 i;
     i32 vmCount;
-    StdRawQuadBasic *unused;
 
     for (i = 0; i < this->objectsCount; i++)
     {
@@ -953,10 +885,7 @@ ZunResult Stage::UpdateObjects()
                 switch (quad->type)
                 {
                 case 0:
-                    g_AnmManager->ExecuteScript(vm);
-                    break;
                 case 1:
-                    unused = quad;
                     g_AnmManager->ExecuteScript(vm);
                     break;
                 }
@@ -964,8 +893,7 @@ ZunResult Stage::UpdateObjects()
                 {
                     vmCount++;
                 }
-                quad =
-                    (StdRawQuadBasic *)((u8 *)quad + quad->byteSize);
+                quad = (StdRawQuadBasic *)((u8 *)quad + quad->byteSize);
             }
             if (vmCount == 0)
             {
@@ -976,32 +904,24 @@ ZunResult Stage::UpdateObjects()
     return ZUN_SUCCESS;
 }
 
-#pragma var_order(curQuadVm, instancesDrawn, instance, fogState, worldMatrix, \
-                  obj, dotProd, viewDir, quadPos, diffPos, curQuad, didDraw,  \
-                  radius, projectSrc, var_98, origColor)
-// FUNCTION: TH07 0x00407900
 i32 Stage::RenderObjects(i32 zLevel)
 {
     ZunColor origColor;
     f32 var_98;
-    D3DXVECTOR3 projectSrc;
+    ZunVec3 projectSrc;
     f32 radius;
-    ZunBool didDraw;
     StdRawQuadBasic *curQuad;
-    D3DXVECTOR3 diffPos;
-    D3DXVECTOR3 quadPos;
-    D3DXVECTOR3 viewDir;
+    ZunVec3 diffPos;
+    ZunVec3 quadPos;
+    ZunVec3 viewDir;
     f32 dotProd;
     StdRawObject *obj;
-    D3DXMATRIX worldMatrix;
+    ZunMatrix worldMatrix;
     i32 fogState;
     StdRawInstance *instance;
-    i32 instancesDrawn;
     AnmVm *curQuadVm;
 
     instance = this->objectInstances;
-    instancesDrawn = 0;
-    didDraw = FALSE;
     projectSrc.x = 0.0f;
     projectSrc.y = 0.0f;
     projectSrc.z = 0.0f;
@@ -1009,10 +929,13 @@ i32 Stage::RenderObjects(i32 zLevel)
 
     UpdateCamera();
 
+    drawCam.pos = this->prevCam.pos.Lerp(this->cam.pos, g_RenderAlpha);
+
     AnmManager::SetCameraModeStatic(g_AnmManager, 1);
 
-    D3DXMatrixIdentity(&worldMatrix);
+    worldMatrix.Identity();
 
+    ZunVec3 drawPosition = this->prevPos.Lerp(this->pos, g_RenderAlpha);
     while (instance->id >= 0)
     {
         obj = this->objects[instance->id];
@@ -1020,159 +943,180 @@ i32 Stage::RenderObjects(i32 zLevel)
         {
             curQuad = &obj->firstQuad;
 
-            quadPos.x = obj->pos.x + instance->pos.x - this->pos.x + obj->size.x / 2.0f;
-            quadPos.y = obj->pos.y + instance->pos.y - this->pos.y + obj->size.y / 2.0f;
-            quadPos.z = obj->pos.z + instance->pos.z - this->pos.z + obj->size.z / 2.0f;
+            quadPos.x = obj->pos.x + instance->pos.x - drawPosition.x + obj->size.x / 2.0f;
+            quadPos.y = obj->pos.y + instance->pos.y - drawPosition.y + obj->size.y / 2.0f;
+            quadPos.z = obj->pos.z + instance->pos.z - drawPosition.z + obj->size.z / 2.0f;
 
-            quadPos = quadPos - this->cam.pos;
+            quadPos = quadPos - drawCam.pos;
 
-            if (D3DXVec3LengthSq(&quadPos) > 1690000.0f)
+            if (quadPos.LengthSq() > 1690000.0f)
             {
-                goto skip_instance;
+                // empty branch
             }
-
-            dotProd = D3DXVec3Dot(&quadPos, &this->cam.lookAtDir);
-            radius = D3DXVec3Length(&obj->size) / 2.0f + 880.0f;
-
-            if (dotProd > radius || dotProd < 60.0f)
+            else
             {
-                goto skip_instance;
-            }
-            obj->flags |= 2;
-            didDraw = TRUE;
+                dotProd = quadPos.Dot(&this->drawCam.lookAtDir);
+                radius = obj->size.Length() / 2.0f + 880.0f;
 
-            while (curQuad->type >= 0)
-            {
-                curQuadVm = &this->quadVms[curQuad->vmIndex];
-                switch (curQuad->type)
+                if (dotProd > radius || dotProd < 60.0f)
                 {
-                case 0:
-                    curQuadVm->pos.x = curQuadVm->offset.x + curQuad->pos.x + instance->pos.x - this->pos.x;
-                    curQuadVm->pos.y = curQuadVm->offset.y + curQuad->pos.y + instance->pos.y - this->pos.y;
-                    curQuadVm->pos.z = curQuadVm->offset.z + curQuad->pos.z + instance->pos.z - this->pos.z;
-
-                    if (curQuad->size.x != 0.0f)
-                    {
-                        curQuadVm->scale.x = curQuad->size.x / curQuadVm->sprite->widthPx;
-                    }
-                    if (curQuad->size.y != 0.0f)
-                    {
-                        curQuadVm->scale.y = curQuad->size.y / curQuadVm->sprite->heightPx;
-                    }
-
-                    if (curQuadVm->autoRotate == 2)
-                    {
-                        worldMatrix.m[3][0] = curQuadVm->pos.x;
-                        worldMatrix.m[3][1] = curQuadVm->pos.y;
-                        worldMatrix.m[3][2] = curQuadVm->pos.z;
-
-                        D3DXVec3Project(&quadPos, &projectSrc, &g_Supervisor.viewport, &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix, &worldMatrix);
-
-                        viewDir.x = g_Supervisor.viewMatrix.m[0][0];
-                        viewDir.y = g_Supervisor.viewMatrix.m[0][1];
-                        viewDir.z = g_Supervisor.viewMatrix.m[0][2];
-                        D3DXVec3Normalize(&viewDir, &viewDir);
-
-                        if (curQuad->size.x != 0.0f)
-                        {
-                            var_98 = curQuad->size.x;
-                        }
-                        else
-                        {
-                            var_98 = curQuadVm->sprite->widthPx;
-                        }
-
-                        worldMatrix.m[3][0] += viewDir.x * var_98 * curQuadVm->scale.x;
-                        worldMatrix.m[3][1] += viewDir.y * var_98 * curQuadVm->scale.x;
-                        worldMatrix.m[3][2] += viewDir.z * var_98 * curQuadVm->scale.x;
-
-                        D3DXVec3Project(&viewDir, &projectSrc, &g_Supervisor.viewport, &g_Supervisor.projectionMatrix, &g_Supervisor.viewMatrix, &worldMatrix);
-
-                        diffPos = viewDir - quadPos;
-
-                        curQuadVm->scale.x = D3DXVec3Length(&diffPos) / var_98;
-                        curQuadVm->scale.y = curQuadVm->scale.x;
-
-                        diffPos = *(D3DXVECTOR3 *)&curQuadVm->pos - this->cam.pos;
-
-                        var_98 = D3DXVec3Length(&diffPos);
-                        origColor = curQuadVm->color;
-
-                        if (this->skyFog.nearPlane < var_98)
-                        {
-                            var_98 = (this->skyFog.nearPlane - var_98) / (this->skyFog.nearPlane - this->skyFog.farPlane);
-                            if (var_98 >= 1.0f)
-                            {
-                                goto skip_draw;
-                            }
-
-                            curQuadVm->color.bytes.b = curQuadVm->color.bytes.b - (u8)((curQuadVm->color.bytes.b - this->skyFog.color.bytes.b) * var_98);
-                            curQuadVm->color.bytes.g = curQuadVm->color.bytes.g - (u8)((curQuadVm->color.bytes.g - this->skyFog.color.bytes.g) * var_98);
-                            curQuadVm->color.bytes.r = curQuadVm->color.bytes.r - (u8)((curQuadVm->color.bytes.r - this->skyFog.color.bytes.r) * var_98);
-                            curQuadVm->color.bytes.a = (u8)(curQuadVm->color.bytes.a * (1.0f - var_98));
-                        }
-
-                        curQuadVm->pos = *(Float3 *)&quadPos;
-
-                        if (curQuadVm->pos.z < 0.0f || curQuadVm->pos.z > 1.0f)
-                        {
-                            // empty branch
-                        }
-                        else
-                        {
-                            if (fogState != 0)
-                            {
-                                if (!g_Supervisor.cfg.disableFog)
-                                {
-                                    g_Supervisor.DisableFog();
-                                }
-                                fogState = 0;
-                            }
-                            g_AnmManager->DrawFacingCamera(curQuadVm);
-                        }
-                        curQuadVm->color = origColor;
-                    }
-                    else
-                    {
-                        if (!g_Supervisor.cfg.disableFog && fogState != 1)
-                        {
-                            if (!g_Supervisor.cfg.disableFog)
-                            {
-                                g_Supervisor.EnableFog();
-                            }
-                            fogState = 1;
-                        }
-                        g_AnmManager->Draw3(curQuadVm);
-                    }
-                    break;
+                    // empty branch
                 }
-            skip_draw:
-                curQuad = (StdRawQuadBasic *)((u8 *)curQuad + curQuad->byteSize);
+                else
+                {
+                    obj->flags |= 2;
+
+                    while (curQuad->type >= 0)
+                    {
+                        curQuadVm = &this->quadVms[curQuad->vmIndex];
+                        switch (curQuad->type)
+                        {
+                        case 0:
+                            curQuadVm->pos.x = curQuadVm->offset.x + curQuad->pos.x +
+                                               instance->pos.x - drawPosition.x;
+                            curQuadVm->pos.y = curQuadVm->offset.y + curQuad->pos.y +
+                                               instance->pos.y - drawPosition.y;
+                            curQuadVm->pos.z = curQuadVm->offset.z + curQuad->pos.z +
+                                               instance->pos.z - drawPosition.z;
+
+                            if (curQuad->size.x != 0.0f)
+                            {
+                                curQuadVm->scale.x = curQuad->size.x / curQuadVm->sprite->widthPx;
+                                curQuadVm->prevScale.x = curQuadVm->scale.x;
+                            }
+                            if (curQuad->size.y != 0.0f)
+                            {
+                                curQuadVm->scale.y = curQuad->size.y / curQuadVm->sprite->heightPx;
+                                curQuadVm->prevScale.y = curQuadVm->scale.y;
+                            }
+
+                            if (curQuadVm->autoRotate == 2)
+                            {
+                                worldMatrix.m[3][0] = curQuadVm->pos.x;
+                                worldMatrix.m[3][1] = curQuadVm->pos.y;
+                                worldMatrix.m[3][2] = curQuadVm->pos.z;
+
+                                ZunMatrix wvp = worldMatrix * g_Supervisor.viewProjectionMatrix;
+                                quadPos.Project(&projectSrc, &g_Supervisor.viewport, &wvp);
+
+                                viewDir.x = g_Supervisor.viewMatrix.m[0][0];
+                                viewDir.y = g_Supervisor.viewMatrix.m[0][1];
+                                viewDir.z = g_Supervisor.viewMatrix.m[0][2];
+                                viewDir.Normalize(&viewDir);
+
+                                if (curQuad->size.x != 0.0f)
+                                {
+                                    var_98 = curQuad->size.x;
+                                }
+                                else
+                                {
+                                    var_98 = curQuadVm->sprite->widthPx;
+                                }
+
+                                worldMatrix.m[3][0] += viewDir.x * var_98 * curQuadVm->scale.x;
+                                worldMatrix.m[3][1] += viewDir.y * var_98 * curQuadVm->scale.x;
+                                worldMatrix.m[3][2] += viewDir.z * var_98 * curQuadVm->scale.x;
+
+                                wvp = worldMatrix * g_Supervisor.viewProjectionMatrix;
+                                viewDir.Project(&projectSrc, &g_Supervisor.viewport, &wvp);
+
+                                diffPos = viewDir - quadPos;
+
+                                curQuadVm->scale.x = diffPos.Length() / var_98;
+                                curQuadVm->scale.y = curQuadVm->scale.x;
+                                curQuadVm->prevScale = curQuadVm->scale;
+
+                                diffPos = curQuadVm->pos - drawCam.pos;
+
+                                var_98 = diffPos.Length();
+                                origColor = curQuadVm->color;
+
+                                if (this->skyFog.nearPlane < var_98)
+                                {
+                                    var_98 = (this->skyFog.nearPlane - var_98) /
+                                             (this->skyFog.nearPlane - this->skyFog.farPlane);
+                                    if (var_98 >= 1.0f)
+                                    {
+                                        goto skip_draw;
+                                    }
+
+                                    curQuadVm->color.bytes.b = curQuadVm->color.bytes.b -
+                                                               (u8)((curQuadVm->color.bytes.b -
+                                                                     this->skyFog.color.bytes.b) *
+                                                                    var_98);
+                                    curQuadVm->color.bytes.g = curQuadVm->color.bytes.g -
+                                                               (u8)((curQuadVm->color.bytes.g -
+                                                                     this->skyFog.color.bytes.g) *
+                                                                    var_98);
+                                    curQuadVm->color.bytes.r = curQuadVm->color.bytes.r -
+                                                               (u8)((curQuadVm->color.bytes.r -
+                                                                     this->skyFog.color.bytes.r) *
+                                                                    var_98);
+                                    curQuadVm->color.bytes.a =
+                                        (u8)(curQuadVm->color.bytes.a * (1.0f - var_98));
+                                }
+
+                                curQuadVm->pos = quadPos;
+
+                                if (curQuadVm->pos.z < 0.0f || curQuadVm->pos.z > 1.0f)
+                                {
+                                    // empty branch
+                                }
+                                else
+                                {
+                                    if (fogState != 0)
+                                    {
+                                        if (!g_Supervisor.cfg.disableFog)
+                                        {
+                                            g_Supervisor.DisableFog();
+                                        }
+                                        fogState = 0;
+                                    }
+                                    curQuadVm->prevColor = curQuadVm->color;
+                                    g_AnmManager->DrawFacingCamera(curQuadVm);
+                                }
+                                curQuadVm->color = origColor;
+                                curQuadVm->prevColor = origColor;
+                            }
+                            else
+                            {
+                                if (!g_Supervisor.cfg.disableFog && fogState != 1)
+                                {
+                                    if (!g_Supervisor.cfg.disableFog)
+                                    {
+                                        g_Supervisor.EnableFog();
+                                    }
+                                    fogState = 1;
+                                }
+                                g_AnmManager->Draw3(curQuadVm);
+                            }
+                            break;
+                        }
+                    skip_draw:
+                        curQuad = (StdRawQuadBasic *)((u8 *)curQuad + curQuad->byteSize);
+                    }
+                }
             }
-            instancesDrawn++;
         }
-    skip_instance:
         instance++;
     }
     return 0;
 }
 
-#pragma var_order(eyeZ, centerY, centerX, aspectRatio, fov, upVec, atVec, eyeVec)
-// FUNCTION: TH07 0x00408180
 void Stage::SetupCameraStageBackground()
 {
-    D3DXVECTOR3 eyeVec;
-    D3DXVECTOR3 atVec;
-    D3DXVECTOR3 upVec;
+    ZunVec3 eyeVec;
+    ZunVec3 atVec;
+    ZunVec3 upVec;
     f32 fov;
     f32 aspectRatio;
     f32 centerX;
     f32 centerY;
     f32 eyeZ;
 
-    centerX = (f32)g_Supervisor.viewport.Width / 2.0f;
-    centerY = (f32)g_Supervisor.viewport.Height / 2.0f;
-    aspectRatio = (f32)g_Supervisor.viewport.Width / (f32)g_Supervisor.viewport.Height;
+    centerX = (f32)g_Supervisor.viewport.width / 2.0f;
+    centerY = (f32)g_Supervisor.viewport.height / 2.0f;
+    aspectRatio = (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height;
     fov = ZUN_PI / 10.0f;
     eyeZ = centerY / tanf(fov / 2.0f);
 
@@ -1188,26 +1132,31 @@ void Stage::SetupCameraStageBackground()
     eyeVec.y = centerY;
     eyeVec.z = eyeZ;
 
-    D3DXMatrixLookAtLH(&g_Supervisor.viewMatrix, &eyeVec, &atVec, &upVec);
-    D3DXMatrixPerspectiveFovLH(
-        &g_Supervisor.projectionMatrix, fov,
-        aspectRatio,
-        1.0f, 10000.0f);
-    RendererSetMatrices(&g_Supervisor.viewMatrix,
-                        &g_Supervisor.projectionMatrix);
+    g_Supervisor.viewMatrix.LookAtLH(&eyeVec, &atVec, &upVec);
+    g_Supervisor.projectionMatrix.PerspectiveFovLH(fov, aspectRatio, 1.0f, 10000.0f);
+    g_Supervisor.viewProjectionMatrix = g_Supervisor.viewMatrix * g_Supervisor.projectionMatrix;
+    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_VIEW, g_Supervisor.viewMatrix);
+    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_PROJECTION, g_Supervisor.projectionMatrix);
 }
 
-// FUNCTION: TH07 0x004082b0
 void Stage::UpdateCamera()
 {
-    D3DXMatrixLookAtLH(&g_Supervisor.viewMatrix, &this->cam.pos,
-                       &(this->cam.lookAt + this->cam.pos), &this->cam.up);
-    D3DXMatrixPerspectiveFovLH(&g_Supervisor.projectionMatrix, this->cam.fov,
-                               (f32)g_Supervisor.viewport.Width /
-                                   (f32)g_Supervisor.viewport.Height,
-                               30.0f, 1800.0f);
-    RendererSetMatrices(&g_Supervisor.viewMatrix,
-                        &g_Supervisor.projectionMatrix);
-    D3DXVec3Cross(&this->cam.right, &this->cam.lookAt, &this->cam.up);
-    D3DXVec3Normalize(&this->cam.right, &this->cam.right);
+    drawCam.pos = this->prevCam.pos.Lerp(this->cam.pos, g_RenderAlpha);
+    drawCam.lookAt = this->prevCam.lookAt.Lerp(this->cam.lookAt, g_RenderAlpha);
+    drawCam.up = this->prevCam.up.Lerp(this->cam.up, g_RenderAlpha);
+    drawCam.fov = utils::LerpAngle(this->prevCam.fov, this->cam.fov, g_RenderAlpha);
+
+    ZunVec3 at = drawCam.lookAt + drawCam.pos;
+    g_Supervisor.viewMatrix.LookAtLH(&drawCam.pos, &at, &drawCam.up);
+    g_Supervisor.projectionMatrix.PerspectiveFovLH(
+        drawCam.fov, (f32)g_Supervisor.viewport.width / (f32)g_Supervisor.viewport.height, 30.0f,
+        1800.0f);
+
+    g_Supervisor.viewProjectionMatrix = g_Supervisor.viewMatrix * g_Supervisor.projectionMatrix;
+    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_VIEW, g_Supervisor.viewMatrix);
+    g_Supervisor.gfxDevice->SetTransformMatrix(MATRIX_PROJECTION, g_Supervisor.projectionMatrix);
+
+    drawCam.right.Cross(&drawCam.lookAt, &drawCam.up);
+    drawCam.right.Normalize(&drawCam.right);
+    drawCam.lookAtDir.Normalize(&drawCam.lookAt);
 }

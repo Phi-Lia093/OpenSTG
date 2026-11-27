@@ -1,492 +1,371 @@
 #include "TextHelper.hpp"
 
-#include "RenderCompat.hpp"
-#include "Renderer.hpp"
+#include <SDL3/SDL_surface.h>
+#include <SDL3_ttf/SDL_ttf.h>
 
-#include <stdio.h>
-#include <wingdi.h>
-
+#include "GameErrorContext.hpp"
 #include "Supervisor.hpp"
-#include "dxutil.hpp"
-#include "i18n.hpp"
+#include "graphics/ZunGraphics.hpp"
 #include "inttypes.hpp"
+#include "sj2utf8/sj2utf8.h"
 
-// GLOBAL: TH07 0x0049ed98
-FormatInfo g_FormatInfoArray[7] = {
-    {
-        1,
-        0x20,
-        0,
-        0x00FF0000,
-        0x0000FF00,
-        0x000000FF,
-    },
-    {
-        1,
-        0x20,
-        0xFF000000,
-        0x00FF0000,
-        0x0000FF00,
-        0x000000FF,
-    },
-    {
-        2,
-        0x10,
-        0,
-        0x00007C00,
-        0x000003E0,
-        0x0000001F,
-    },
-    {
-        3,
-        0x10,
-        0,
-        0x0000F800,
-        0x000007E0,
-        0x0000001F,
-    },
-    {
-        2,
-        0x10,
-        0x00008000,
-        0x00007C00,
-        0x000003E0,
-        0x0000001F,
-    },
-    {
-        5,
-        0x10,
-        0x0000F000,
-        0x00000F00,
-        0x000000F0,
-        0x0000000F,
-    },
-    {
-        (u32)-1,
-        0x0,
-        0,
-        0,
-        0,
-        0,
-    },
-};
+static TTF_Font *g_Font = nullptr;
 
-// GLOBAL: TH07 0x0049fe28
-SurfaceHandle *g_TextBufferSurface;
-
-// FUNCTION: TH07 0x00431a0f
-TextHelper::TextHelper()
+// stolen from
+// https://stackoverflow.com/questions/3404199/how-to-find-out-the-encoding-of-a-file-c-sharp/3404317#3404317
+bool IsUtf8(const char *string)
 {
-    this->format = (u32)-1;
-    this->width = 0;
-    this->height = 0;
-    this->hdc = NULL;
-    this->gdiobj2 = NULL;
-    this->gdiobj = NULL;
-    this->buffer = NULL;
+    i32 charByteCounter = 1;
+    unsigned char curByte;
+
+    size_t len = strlen(string);
+    for (size_t i = 0; i < len; i++)
+    {
+        curByte = string[i];
+        if (charByteCounter == 1)
+        {
+            if (curByte >= 0x80)
+            {
+                while (((curByte <<= 1) & 0x80) != 0)
+                {
+                    charByteCounter++;
+                }
+                if (charByteCounter == 1 || charByteCounter > 6)
+                {
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            if ((curByte & 0xC0) != 0x80)
+            {
+                return false;
+            }
+            charByteCounter--;
+        }
+    }
+    if (charByteCounter > 1)
+    {
+        return false;
+    }
+
+    return true;
 }
 
-// FUNCTION: TH07 0x00431a4b
+TextHelper::TextHelper()
+{
+    this->buffer = NULL;
+    this->width = 0;
+    this->height = 0;
+}
+
 TextHelper::~TextHelper()
 {
     ReleaseBuffer();
 }
 
-// FUNCTION: TH07 0x00431a5c
 bool TextHelper::ReleaseBuffer()
 {
-    if (this->hdc)
+    if (this->buffer)
     {
-        SelectObject((HDC)this->hdc, this->gdiobj);
-        DeleteDC((HDC)this->hdc);
-        DeleteObject(this->gdiobj2);
-        this->format = (u32)-1;
+        SDL_DestroySurface(this->buffer);
+        this->buffer = NULL;
         this->width = 0;
         this->height = 0;
-        this->hdc = NULL;
-        this->gdiobj2 = NULL;
-        this->gdiobj = NULL;
-        this->buffer = NULL;
         return true;
     }
-
     return false;
 }
 
-// FUNCTION: TH07 0x00431ace
-bool TextHelper::AllocateBufferWithFallback(i32 width, i32 height,
-                                            u32 format)
+bool TextHelper::AllocateBuffer(i32 width, i32 height)
 {
-    if (TryAllocateBuffer(width, height, format))
-    {
-        return true;
-    }
-
-    if (format == 2 || format == 5)
-    {
-        return TryAllocateBuffer(width, height, 1);
-    }
-
-    if (format == 3)
-    {
-        return TryAllocateBuffer(width, height, 1);
-    }
-
-    return false;
-}
-
-struct ThBitmapInfo
-{
-    BITMAPINFOHEADER bmiHeader;
-    RGBQUAD bmiColors[17];
-};
-C_ASSERT(sizeof(ThBitmapInfo) == 0x6c);
-
-#pragma var_order(imageWidthInBytes, deviceContext, originalBitmapObj, \
-                  bitmapInfo, formatInfo, bitmapObj, bitmapData)
-// FUNCTION: TH07 0x00431b2d
-bool TextHelper::TryAllocateBuffer(i32 width, i32 height, u32 format)
-{
-    i32 imageWidthInBytes;
-    HDC deviceContext;
-    HGDIOBJ originalBitmapObj;
-    u8 *bitmapData;
-    HBITMAP bitmapObj;
-    FormatInfo *formatInfo;
-    ThBitmapInfo bitmapInfo;
-
     ReleaseBuffer();
-    memset(&bitmapInfo, 0, sizeof(ThBitmapInfo));
-    formatInfo = GetFormatInfo(format);
-    if (!formatInfo)
+    this->buffer = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32);
+    if (!this->buffer)
     {
         return false;
     }
-    imageWidthInBytes = (width * formatInfo->bitCount / 8 + 3) / 4 * 4;
-    bitmapInfo.bmiHeader.biSize = sizeof(ThBitmapInfo);
-    bitmapInfo.bmiHeader.biWidth = width;
-    bitmapInfo.bmiHeader.biHeight = -(height + 1);
-    bitmapInfo.bmiHeader.biPlanes = 1;
-    bitmapInfo.bmiHeader.biBitCount = (WORD)formatInfo->bitCount;
-    bitmapInfo.bmiHeader.biSizeImage = height * imageWidthInBytes;
-    if (format != 2 && format != 1)
-    {
-        bitmapInfo.bmiHeader.biCompression = 3;
-        ((u32 *)bitmapInfo.bmiColors)[0] = formatInfo->redMask;
-        ((u32 *)bitmapInfo.bmiColors)[1] = formatInfo->greenMask;
-        ((u32 *)bitmapInfo.bmiColors)[2] = formatInfo->blueMask;
-        ((u32 *)bitmapInfo.bmiColors)[3] = formatInfo->alphaMask;
-    }
-    bitmapObj = CreateDIBSection(NULL, (BITMAPINFO *)&bitmapInfo, 0,
-                                 (void **)&bitmapData, NULL, 0);
-    if (!bitmapObj)
-    {
-        return false;
-    }
-    memset(bitmapData, 0, bitmapInfo.bmiHeader.biSizeImage);
-    deviceContext = CreateCompatibleDC(NULL);
-    originalBitmapObj = SelectObject(deviceContext, bitmapObj);
-    this->hdc = deviceContext;
-    this->gdiobj2 = bitmapObj;
-    this->buffer = bitmapData;
-    this->imageSizeInBytes = bitmapInfo.bmiHeader.biSizeImage;
-    this->gdiobj = originalBitmapObj;
+    SDL_FillSurfaceRect(this->buffer, NULL, 0);
     this->width = width;
     this->height = height;
-    this->format = format;
-    this->imageWidthInBytes = imageWidthInBytes;
     return true;
 }
 
-// FUNCTION: TH07 0x00431cec
-FormatInfo *TextHelper::GetFormatInfo(u32 format)
+bool TextHelper::InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight, i32 param5)
 {
-    i32 i;
-    for (i = 0; g_FormatInfoArray[i].format != -1 &&
-                g_FormatInfoArray[i].format != format;
-         i++)
+    i32 doubleArea = spriteWidth * fontHeight * 2;
+    if (doubleArea == 0 || !this->buffer)
     {
+        return false;
     }
 
-    if (format == -1)
+    SDL_LockSurface(this->buffer);
+    u8 *pixels = (u8 *)this->buffer->pixels;
+    i32 pitch = this->buffer->pitch;
+
+    for (i32 py = 0; py < fontHeight; py++)
     {
-        return NULL;
-    }
-
-    return &g_FormatInfoArray[i];
-}
-
-struct A1R5G5B5
-{
-    u16 blue : 5;
-    u16 green : 5;
-    u16 red : 5;
-    u16 alpha : 1;
-};
-
-#pragma var_order(bufferRegion, i, doubleArea, bufferCursor, bufferStart)
-// FUNCTION: TH07 0x00431d3c
-bool TextHelper::InvertAlpha(i32 x, i32 y, i32 spriteWidth, i32 fontHeight,
-                             i32 param5)
-{
-    u8 *bufferStart;
-    A1R5G5B5 *bufferCursor;
-    i32 doubleArea;
-    i32 i;
-    u8 *bufferRegion;
-
-    doubleArea = spriteWidth * fontHeight * 2;
-    bufferStart = &this->buffer[0];
-    bufferRegion = &bufferStart[y * spriteWidth * 2];
-    switch (this->format)
-    {
-    case 1:
-        for (i = 3; i < doubleArea; i += 4)
+        for (i32 px = 0; px < spriteWidth; px++)
         {
-            bufferRegion[i] ^= 255;
-        }
-        break;
-    case 2:
-        for (bufferCursor = (A1R5G5B5 *)bufferRegion, i = 0; i < doubleArea;
-             i += 2, bufferCursor++)
-        {
-            bufferCursor->alpha ^= 1;
-            if (bufferCursor->alpha)
+            u8 *p = &pixels[(py + y) * pitch + (px + x) * 4];
+            u8 r = p[0];
+            u8 g = p[1];
+            u8 b = p[2];
+            u8 a = p[3];
+
+            if (a > 0)
             {
+                i32 i = (py * spriteWidth + px) * 2;
+
                 if (!param5)
                 {
-                    if (bufferCursor->red >= bufferCursor->blue)
+                    if (r >= b)
                     {
-                        bufferCursor->red = bufferCursor->red -
-                                            bufferCursor->red * i * 2 /
-                                                doubleArea / 3;
-                        bufferCursor->green = bufferCursor->green -
-                                              bufferCursor->green * i * 2 /
-                                                  doubleArea / 3;
+                        r = r - (r * i * 2) / doubleArea / 3;
+                        g = g - (g * i * 2) / doubleArea / 3;
                     }
                     else
                     {
-                        bufferCursor->blue = bufferCursor->blue -
-                                             bufferCursor->blue * i /
-                                                 doubleArea / 2;
-                        bufferCursor->green = bufferCursor->green -
-                                              bufferCursor->green * i /
-                                                  doubleArea / 2;
+                        b = b - (b * i) / doubleArea / 2;
+                        g = g - (g * i) / doubleArea / 2;
                     }
                 }
                 else
                 {
-                    if (bufferCursor->red >= bufferCursor->blue)
+                    if (r >= b)
                     {
-                        bufferCursor->red = bufferCursor->red -
-                                            bufferCursor->red * i /
-                                                doubleArea / 4;
-                        bufferCursor->green = bufferCursor->green -
-                                              bufferCursor->green * i /
-                                                  doubleArea / 4;
+                        r = r - (r * i) / doubleArea / 4;
+                        g = g - (g * i) / doubleArea / 4;
                     }
                     else
                     {
-                        bufferCursor->blue = bufferCursor->blue -
-                                             bufferCursor->blue * i /
-                                                 doubleArea / 4;
-                        bufferCursor->green = bufferCursor->green -
-                                              bufferCursor->green * i /
-                                                  doubleArea / 4;
+                        b = b - (b * i) / doubleArea / 4;
+                        g = g - (g * i) / doubleArea / 4;
                     }
                 }
+
+                p[0] = r;
+                p[1] = g;
+                p[2] = b;
+                p[3] = a;
             }
             else
             {
-                bufferCursor->red = 0;
-                bufferCursor->green = 0;
-                bufferCursor->blue = 0;
-            }
-        }
-        break;
-    case 5:
-        for (i = 1; i < doubleArea; i += 2)
-        {
-            bufferRegion[i] ^= 240;
-        }
-        break;
-    default:
-        return false;
-    }
-    return true;
-}
-
-// FUNCTION: TH07 0x00432164
-bool TextHelper::CopyTextToSurface(SurfaceHandle *surface)
-{
-    u8 *srcBuf;
-    i32 i;
-    i32 srcWidthBytes;
-    i32 dstWidthBytes;
-    u8 *dstBuf;
-    i32 copyWidth;
-
-    if (!(u8)(u32)(this->gdiobj2 != NULL))
-    {
-        return false;
-    }
-    if (!surface || !surface->surface || !surface->surface->pixels || !this->buffer)
-    {
-        return false;
-    }
-
-    // The glyphs are drawn with GDI into a 32-bit buffer whose coverage ends up in the
-    // red channel; that coverage becomes the alpha of the sprite, and the requested
-    // colour is applied uniformly. Doing it this way avoids the original's alpha-bit
-    // fiddling entirely, which relied on an exact A1R5G5B5 bit layout.
-    srcWidthBytes = this->imageWidthInBytes;
-    srcBuf = this->buffer;
-    dstWidthBytes = surface->width * 4;
-    dstBuf = surface->surface->pixels;
-
-    copyWidth = this->GetWidth();
-    if (copyWidth > surface->width)
-    {
-        copyWidth = surface->width;
-    }
-
-    for (i = 0; i < this->GetHeight() && i < surface->height; i++)
-    {
-        ConvertToRGBA8(srcBuf, dstBuf, (u32)copyWidth,
-                       (TextureFormat)this->GetFormat(), 0, false);
-        srcBuf += srcWidthBytes;
-        dstBuf += dstWidthBytes;
-    }
-
-    // GDI never writes an alpha channel, so a 32-bit DIB comes back fully transparent and
-    // the glyphs disappear. Their coverage is in the colour channels instead: take the
-    // brightest channel as opacity.
-    if (this->GetFormat() == 1)
-    {
-        u8 *dst = surface->surface->pixels;
-        for (i32 row = 0; row < this->GetHeight() && row < surface->height; row++)
-        {
-            for (i32 col = 0; col < copyWidth; col++)
-            {
-                u8 *px = &dst[((size_t)row * surface->width + col) * 4];
-                u8 coverage = px[0] > px[1] ? px[0] : px[1];
-                if (px[2] > coverage)
-                {
-                    coverage = px[2];
-                }
-                px[3] = coverage;
+                p[0] = 0;
+                p[1] = 0;
+                p[2] = 0;
+                p[3] = 0;
             }
         }
     }
 
-    surface->UnlockRect();
+    SDL_UnlockSurface(this->buffer);
     return true;
 }
 
-// FUNCTION: TH07 0x0043225b
-void TextHelper::CreateTextBuffer()
+bool TextHelper::CopyTextToTexture(i32 yPos, i32 spriteWidth, i32 spriteHeight, i32 fontHeight,
+                                   i32 fontWidth, GfxTextureHandle outTexture)
 {
-    // A 1024x64 scratch surface the GDI text is composed into. Format 1 is 32-bit RGBA,
-    // which GDI writes as BGRA; reading the coverage from one channel there is far more
-    // dependable than interpreting 16-bit alpha bits.
-    g_TextBufferSurface = SurfaceHandleCreate(1024, 64, 1);
+    SDL_Surface *outSurface = SDL_CreateSurface(spriteWidth, spriteHeight, SDL_PIXELFORMAT_RGBA32);
+    if (!outSurface)
+    {
+        return false;
+    }
+    SDL_FillSurfaceRect(outSurface, NULL, 0);
+
+    SDL_Rect srcRect;
+    srcRect.x = 0;
+    srcRect.y = 0;
+    srcRect.w = spriteWidth * 2;
+    srcRect.h = fontHeight * 2;
+    if (srcRect.w > this->width)
+    {
+        srcRect.w = this->width;
+    }
+    if (srcRect.h > this->height)
+    {
+        srcRect.h = this->height;
+    }
+
+    SDL_Rect dstRect;
+    dstRect.x = 0;
+    dstRect.y = 0;
+    dstRect.w = spriteWidth;
+    dstRect.h = fontWidth;
+
+    SDL_StretchSurface(this->buffer, &srcRect, outSurface, &dstRect, SDL_SCALEMODE_LINEAR);
+
+    g_Supervisor.gfxDevice->BindTexture(outTexture);
+    g_Supervisor.gfxDevice->SetTextureSubImage(0, yPos, outSurface->w, fontWidth,
+                                               outSurface->pixels);
+    SDL_DestroySurface(outSurface);
+    return true;
 }
 
-// FUNCTION: TH07 0x0043227e
+ZunResult TextHelper::CreateTextBuffer()
+{
+    if (g_Font)
+    {
+        return ZUN_SUCCESS;
+    }
+
+    if (!TTF_Init())
+    {
+        g_GameErrorContext.Log("TTF_Init fail : %s\n", SDL_GetError());
+        return ZUN_ERROR;
+    }
+
+    g_Font = TTF_OpenFont(FileSystem::GetBasePath("msgothic.ttc").c_str(), 10);
+    if (!g_Font)
+    {
+        g_GameErrorContext.Log("TTF_OpenFont fail : %s\n", SDL_GetError());
+        return ZUN_ERROR;
+    }
+    TTF_SetFontStyle(g_Font, TTF_STYLE_BOLD);
+    return ZUN_SUCCESS;
+}
+
 void TextHelper::ReleaseTextBuffer()
 {
-    if (g_TextBufferSurface)
-    {
-        g_TextBufferSurface->Release();
-        g_TextBufferSurface = NULL;
-    }
+    TTF_CloseFont(g_Font);
+    g_Font = nullptr;
+    TTF_Quit();
 }
 
-// FUNCTION: TH07 0x004322a3
-void TextHelper::RenderTextToTextureBold(i32 xPos, i32 yPos, i32 spriteWidth,
-                                         i32 spriteHeight, i32 fontHeight,
-                                         i32 fontWidth, D3DCOLOR textColor,
-                                         u32 outlineType, char *string,
-                                         TextureHandle *outTexture)
+void TextHelper::RenderTextToTextureBold(i32 xPos, i32 yPos, i32 spriteWidth, i32 spriteHeight,
+                                         i32 fontHeight, i32 fontWidth, u32 textColor,
+                                         u32 outlineType, char *string, GfxTextureHandle outTexture)
 {
-    RenderTexture *dst;
-    FontFace *face;
-    i32 textWidth;
-    i32 drawX;
-    i32 drawY;
-
-    if (!outTexture || !outTexture->texture || !string)
+    i32 fontSize = fontHeight * 2 - 2;
+    if (fontSize <= 0)
     {
         return;
     }
 
-    face = FontGetDefault();
-    if (!face)
+    if (CreateTextBuffer() != ZUN_SUCCESS)
     {
         return;
     }
 
-    if (fontHeight <= 0)
-    {
-        fontHeight = 15;
-    }
-    if (fontWidth <= 0)
-    {
-        fontWidth = 15;
-    }
+    TTF_SetFontSize(g_Font, fontSize);
 
-    dst = outTexture->texture;
-    if (!dst->pixels)
+    char *convStr = string;
+    bool needsFree = false;
+    if (!IsUtf8(string))
     {
-        dst->pixels = (u8 *)malloc((size_t)dst->width * dst->height * 4);
-        if (!dst->pixels)
+        std::string tmp = sj2utf8(string);
+        if (!tmp.empty())
         {
-            return;
-        }
-        memset(dst->pixels, 0, (size_t)dst->width * dst->height * 4);
-    }
-
-    // Clear only the band this sprite occupies. Several sprites share one texture (every
-    // menu description does), so clearing the whole thing would erase the lines drawn for
-    // the sprites before this one.
-    {
-        i32 clearTop = yPos;
-        i32 clearBottom = yPos + fontHeight + 2;
-        if (clearTop < 0)
-        {
-            clearTop = 0;
-        }
-        if (clearBottom > dst->height)
-        {
-            clearBottom = dst->height;
-        }
-        if (clearBottom > clearTop)
-        {
-            memset(&dst->pixels[(size_t)clearTop * dst->width * 4], 0,
-                   (size_t)(clearBottom - clearTop) * dst->width * 4);
+            convStr = SDL_strdup(tmp.c_str());
+            needsFree = true;
         }
     }
 
-    // Centre the string inside the sprite. The glyph height is the line height the caller
-    // asked for; stb_truetype scales by character height, which is what fontHeight names.
-    textWidth = FontMeasureText(face, string, (f32)fontHeight);
-    drawX = (spriteWidth - textWidth) / 2;
-    if (drawX < 0)
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Surface *textSurf = TTF_RenderText_Blended(g_Font, convStr, 0, white);
+    if (needsFree)
     {
-        drawX = 0;
+        SDL_free(convStr);
     }
-    // stb_truetype positions glyphs relative to the baseline, and a glyph extends upwards
-    // from it. Placing the baseline at the sprite's top would draw the whole character
-    // above the visible area, so the baseline is pushed down by the ascent.
-    drawY = yPos + FontAscent(face, (f32)fontHeight);
+    if (!textSurf)
+    {
+        return;
+    }
 
-    // outlineType comes in as an RGB colour; 0xffffffff means the text has no outline.
-    // Painting the outline in that colour and the glyph in textColor reproduces the
-    // original's bordered look.
-    FontDrawText(face, dst->pixels, dst->width, dst->height, drawX, drawY, string,
-                 (f32)fontHeight, textColor, outlineType,
-                 outlineType != 0xffffffff);
+    i32 dWidth = spriteWidth * 2;
+    i32 dHeight = fontHeight * 2 + 6;
+    if (dWidth > 1024)
+    {
+        dWidth = 1024;
+    }
+    if (dHeight > 64)
+    {
+        dHeight = 64;
+    }
+    if (dWidth <= 0 || dHeight <= 0)
+    {
+        SDL_DestroySurface(textSurf);
+        return;
+    }
 
-    RenderTextureUpload(dst, dst->pixels);
+    TextHelper textHelper;
+    textHelper.AllocateBuffer(dWidth, dHeight);
 
+    SDL_SetSurfaceBlendMode(textSurf, SDL_BLENDMODE_BLEND);
+
+    SDL_SetSurfaceColorMod(textSurf, 0, 0, 0);
+    SDL_Rect dstRect;
+    if (outlineType != 0xffffffff)
+    {
+        i32 dx[4] = {4, 0, 2, 2};
+        i32 dy[4] = {2, 2, 0, 4};
+        for (i32 i = 0; i < 4; i++)
+        {
+            dstRect = {xPos * 2 + dx[i], dy[i], textSurf->w, textSurf->h};
+            SDL_BlitSurface(textSurf, NULL, textHelper.buffer, &dstRect);
+        }
+    }
+    else
+    {
+        i32 dx[4] = {3, 1, 2, 2};
+        i32 dy[4] = {2, 2, 1, 3};
+        for (i32 i = 0; i < 4; i++)
+        {
+            dstRect = {xPos * 2 + dx[i], dy[i], textSurf->w, textSurf->h};
+            SDL_BlitSurface(textSurf, NULL, textHelper.buffer, &dstRect);
+        }
+    }
+
+    u8 r = (textColor >> 16) & 0xFF;
+    u8 g = (textColor >> 8) & 0xFF;
+    u8 b_col = textColor & 0xFF;
+    SDL_SetSurfaceColorMod(textSurf, r, g, b_col);
+    dstRect = {xPos * 2 + 2, 2, textSurf->w, textSurf->h};
+    SDL_BlitSurface(textSurf, NULL, textHelper.buffer, &dstRect);
+
+    SDL_DestroySurface(textSurf);
+
+    textHelper.InvertAlpha(0, 0, spriteWidth << 1, fontHeight * 2 + 6,
+                           (u32)(outlineType == 0xffffffff));
+    textHelper.CopyTextToTexture(yPos, spriteWidth, spriteHeight, fontHeight, fontWidth,
+                                 outTexture);
+}
+
+i32 TextHelper::GetLogicalStringWidth(const char *str)
+{
+    if (!IsUtf8(str))
+    {
+        return strlen(str);
+    }
+
+    i32 width = 0;
+    while (*str)
+    {
+        if ((*str & 0x80) == 0)
+        {
+            width += 1;
+            str += 1;
+        }
+        else if ((*str & 0xE0) == 0xC0)
+        {
+            width += 2;
+            str += 2;
+        }
+        else if ((*str & 0xF0) == 0xE0)
+        {
+            width += 2;
+            str += 3;
+        }
+        else if ((*str & 0xF8) == 0xF0)
+        {
+            width += 2;
+            str += 4;
+        }
+        else
+        {
+            str++;
+        }
+    }
+    return width;
 }

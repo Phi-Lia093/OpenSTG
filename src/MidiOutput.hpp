@@ -1,6 +1,7 @@
 #pragma once
 
-#include <windows.h>
+// the midi output is basically completely unimplemented. everything here is just a stub until
+// there's a proper midi player (if there ever will be one)
 
 #include "ZunBool.hpp"
 #include "ZunResult.hpp"
@@ -21,20 +22,17 @@ struct MidiTimer
     MidiTimer();
     ~MidiTimer();
 
-    u32 StartTimerImpl(u32 delay, LPTIMECALLBACK cb, DWORD_PTR data);
-    void StartTimer();
-    i32 StopTimerImpl();
-    void StopTimer();
+    // u32 StartTimer(u32 delay, LPTIMECALLBACK cb, DWORD_PTR data);
+    void StartTimerDefault();
+    i32 StopTimer();
 
-    // FUNCTION: TH07 0x0044d620 FOLDED
-    virtual void OnTimerElapsed() {};
+    virtual void OnTimerElapsed();
 
-    static void CALLBACK DefaultTimerCallback(u32 delay, u32 wPeriodMin,
-                                              DWORD_PTR dwUser, DWORD_PTR dw1,
-                                              DWORD_PTR dw2);
+    /*static void CALLBACK DefaultTimerCallback(u32 delay, u32 wPeriodMin, DWORD_PTR dwUser,
+                                              DWORD_PTR dw1, DWORD_PTR dw2);*/
 
     u32 timerId;
-    TIMECAPS timeCaps;
+    // TIMECAPS timeCaps;
     i32 fileIdx;
 };
 
@@ -92,7 +90,6 @@ struct MidiTrack
     u8 *savedTrackDataCursor;
     u32 savedTrackLengthOther;
 };
-C_ASSERT(sizeof(MidiTrack) == 0x20);
 
 struct MidiDevice
 {
@@ -101,10 +98,10 @@ struct MidiDevice
 
     ZunResult Close();
     ZunBool OpenDevice(i32 deviceID);
-    ZunBool SendLongMsg(LPMIDIHDR pmh);
+    // ZunBool SendLongMsg(LPMIDIHDR pmh);
     ZunBool SendShortMsg(u8 midiStatus, u8 firstByte, u8 secondByte);
 
-    HMIDIOUT handle;
+    // HMIDIOUT handle;
     i32 deviceID;
 };
 
@@ -140,7 +137,7 @@ struct MidiOutput : MidiTimer
     ZunResult SetFadeOut(i32 interval);
     static u32 SkipVariableLength(u8 **curTrackDataCursor);
     ZunResult StopPlayback();
-    ZunResult UnprepareHeader(LPMIDIHDR pmh);
+    ZunResult UnprepareHeader(void *pmh);
 
     static u32 Ntohl(u32 x)
     {
@@ -154,21 +151,21 @@ struct MidiOutput : MidiTimer
         return *(const u32 *)tmp;
     }
 
-    __forceinline void Play(const char *path)
+    void Play(const char *path)
     {
         this->StopPlayback();
         this->LoadFile(path);
         this->Play();
     }
 
-    __forceinline void PlayLoaded(i32 idx)
+    void PlayLoaded(i32 idx)
     {
         this->StopPlayback();
         this->ParseFile(idx);
         this->Play();
     }
 
-    MIDIHDR *midiHeaders[32];
+    // MIDIHDR *midiHeaders[32];
     i32 midiHeadersCursor;
     u8 *midiFileData[32];
     i32 numTracks;
@@ -196,11 +193,10 @@ struct MidiOutput : MidiTimer
     u64 savedVolume;
     u64 savedfield_0x130;
 };
-C_ASSERT(sizeof(MidiOutput) == 0x300);
 
 // VTABLE: TH07 0x00496c0c
 struct DummyMidiTimer : MidiTimer
 {
     void OnTimerElapsed();
 };
-extern LARGE_INTEGER g_PerfCounter;
+// extern LARGE_INTEGER g_PerfCounter;

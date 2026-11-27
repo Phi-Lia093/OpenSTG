@@ -1,7 +1,5 @@
 #pragma once
 
-#include "RenderCompat.hpp"
-
 #include "EclManager.hpp"
 
 extern EclExInstr g_EclExInstr[24];
@@ -35,7 +33,6 @@ void ExInsSpawnBulletsWithDirChange(Enemy *enemy, EclRawInstr *instr);
 void ExInsSpawnBulletsWithDirChange2(Enemy *enemy, EclRawInstr *instr);
 } // namespace EnemyEclInstr
 
-ZunBool IsPointInRotatedRect(Float3 *point, Float3 *center,
-                             Float3 *size, Float3 *pivot,
-                             f32 sine, f32 cosine);
+ZunBool IsPointInRotatedRect(ZunVec3 *param_1, ZunVec3 *param_2, ZunVec3 *param_3, ZunVec3 *param_4,
+                             f32 param_5, f32 param_6);
 void ModifyEffect1eAcceleration();

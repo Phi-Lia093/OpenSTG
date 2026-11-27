@@ -1,12 +1,44 @@
 #pragma once
 
-#include "RenderCompat.hpp"
-
-#include "Global.hpp"
 #include "ResultScreen.hpp"
+#include "Rng.hpp"
 #include "Supervisor.hpp"
 #include "ZunResult.hpp"
 #include "inttypes.hpp"
+
+struct ZunGlobals
+{
+    u32 guiScore;
+    u32 score;
+    u32 guiScoreDifference;
+    u32 highScore;
+    u8 highScoreNumContinues;
+    // pad 3
+    i32 grazeInStage;
+    i32 grazeInTotal;
+    i32 spellCardsCaptured;
+    u8 numRetries;
+    // pad 3
+    i32 pointItemsCollectedThisStage;
+    i32 pointItemsCollectedForExtend;
+    i32 extendsFromPointItems;
+    i32 nextNeededPointItemsForExtend;
+    i32 rng1[7];
+    f32 deaths; // ZUN quirk: Why the fuck are these stored as floats
+    f32 rngFloat1[2];
+    f32 livesRemaining;
+    f32 rngFloat2[2];
+    f32 bombsRemaining;
+    f32 bombsUsed;
+    f32 rngFloat3[3];
+    f32 currentPower;
+    f32 rngFloat4[2];
+    i32 cherryStart;
+    i32 rng2[8];
+    u32 curCsum;
+    i32 csumAsSum;
+    i32 csumData[5];
+};
 
 struct Rank
 {
@@ -17,18 +49,8 @@ struct Rank
 
 struct GameManager
 {
-    GameManager()
-    {
-        memset(this, 0, sizeof(GameManager));
-        this->arcadeRegionTopLeftPos.x = 32.0f;
-        this->arcadeRegionTopLeftPos.y = 16.0f;
-        this->arcadeRegionSize.x = 384.0f;
-        this->arcadeRegionSize.y = 448.0f;
-        this->demoIdx = 2;
-        this->phantasmUnlocked = TRUE;
-    }
+    GameManager();
 
-    // FUNCTION: TH07 0x004012b0
     void RegenerateGameIntegrityCsum()
     {
         this->globals->rng1[2] = g_Rng.GetRandomU32InRange(100000) + 6543;
@@ -39,32 +61,21 @@ struct GameManager
         this->csumFloat = (f32)(this->globals->csumAsSum + this->globals->rng2[3]);
     }
 
-    // FUNCTION: TH07 0x00401390
-    void SetBombsRemainingAndComputeCsum(i32 amount)
+    void SetBombsRemainingAndComputeCsum(i32 param_1)
     {
-        this->globals->bombsRemaining = (f32)amount;
+        this->globals->bombsRemaining = (f32)param_1;
         this->globals->curCsum = this->globals->rng1[2];
         this->globals->csumAsSum = ComputeGameIntegrityCsum();
-        this->csumFloat =
-            (f32)(this->globals->csumAsSum + this->globals->rng2[3]);
+        this->csumFloat = (f32)(this->globals->csumAsSum + this->globals->rng2[3]);
     }
 
-    // FUNCTION: TH07 0x00404fe0
     ZunBool CheckGameIntegrity()
     {
-#ifdef NON_MATCHING
         return FALSE;
-#else
-        return (this->globals->curCsum !=
-                this->globals->rng1[2] + this->globals->csumData[2] *
-                                             ((i32) & this->globals->curCsum - (i32)this->globals->rng1 +
-                                                          sizeof(this->globals->csumData) + sizeof(GameConfiguration) * 2)) ||
-               (this->globals->csumAsSum + this->globals->rng2[3] !=
-                (i32)this->csumFloat);
-#endif
     }
 
-    // FUNCTION: TH07 0x0043b5c0
+    void AddCurrentPower(i32 amount);
+
     void RerollRng()
     {
         this->globals->rng1[0] = g_Rng.GetRandomU32InRange(100000) + 6543;
@@ -82,31 +93,6 @@ struct GameManager
         return this->globals->currentPower;
     }
 
-    void SetPower(i32 amount)
-    {
-        this->globals->currentPower = amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    void SetLives(i32 amount)
-    {
-        this->globals->livesRemaining = amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    void SetDeaths(i32 amount)
-    {
-        this->globals->deaths = amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    void SetBombsUsed(i32 amount)
-    {
-        this->globals->bombsUsed = amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    // FUNCTION: TH07 0x0043b750
     void CheckGameIntegrityOnDeath(i32 amount)
     {
         if (CheckGameIntegrity())
@@ -117,17 +103,6 @@ struct GameManager
         RegenerateGameIntegrityCsum();
     }
 
-    void AddCurrentPower(i32 amount)
-    {
-        if (CheckGameIntegrity())
-        {
-            NUKE_SUPERVISOR();
-        }
-        this->globals->currentPower += (f32)amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    // FUNCTION: TH07 0x0043b7a0
     void AddBombsUsed(i32 amount)
     {
         if (CheckGameIntegrity())
@@ -135,28 +110,6 @@ struct GameManager
             NUKE_SUPERVISOR();
         }
         this->globals->bombsUsed += (f32)amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    // FUNCTION: TH07 0x0042d5cd
-    void AddLivesRemaining(i32 amount)
-    {
-        if (CheckGameIntegrity())
-        {
-            NUKE_SUPERVISOR();
-        }
-        this->globals->livesRemaining += (f32)amount;
-        RegenerateGameIntegrityCsum();
-    }
-
-    // FUNCTION: TH07 0x0042d612
-    void AddBombsRemaining(i32 amount)
-    {
-        if (CheckGameIntegrity())
-        {
-            NUKE_SUPERVISOR();
-        }
-        this->globals->bombsRemaining += (f32)amount;
         RegenerateGameIntegrityCsum();
     }
 
@@ -175,17 +128,14 @@ struct GameManager
         return this->cherry >= this->cherryMax;
     }
 
-    // FUNCTION: TH07 0x0042d657
-    void ResetRegionsPos()
+    void SetCurrentPower(i32 amount)
     {
-        this->arcadeRegionTopLeftPos.x = 32.0f;
-        this->arcadeRegionTopLeftPos.y = 16.0f;
-        this->arcadeRegionSize.x = 384.0f;
-        this->arcadeRegionSize.y = 448.0f;
-        this->playerMovementAreaTopLeftPos.x = 8.0f;
-        this->playerMovementAreaTopLeftPos.y = 16.0f;
-        this->playerMovementAreaSize.x = 368.0f;
-        this->playerMovementAreaSize.y = 416.0f;
+        this->globals->currentPower = (f32)amount;
+    }
+
+    void SetLivesRemaining(i32 amount)
+    {
+        this->globals->livesRemaining = (f32)amount;
     }
 
     static ZunResult RegisterChain();
@@ -204,8 +154,10 @@ struct GameManager
     ZunBool HasUnlockedPhantasm(i32 shotType);
     ZunBool HasUnlockedPhantasmAndMaxClears();
 
+    void AddBombsRemaining(i32 amount);
     void AddCherryPlus(i32 amount);
     void AddCherry(i32 amount);
+    void AddLivesRemaining(i32 amount);
     void ExtendFromPoints();
 
     void DecreaseSubrank(i32 amount);
@@ -215,8 +167,11 @@ struct GameManager
     void InitializeRank();
     static void InitializeRngAndCsum();
     i32 IsInBounds(f32 x, f32 y, f32 widthPx, f32 heightPx);
+    void ResetRegionsPos();
 
     static void DrawLoadingSprite();
+
+    void Pause();
 
     void *tmpBuffer;
     GameConfiguration *defaultCfg;
@@ -273,5 +228,5 @@ struct GameManager
     Rank rank;
     i32 subrank;
 };
-C_ASSERT(sizeof(GameManager) == 0x9644);
+
 extern GameManager g_GameManager;

@@ -1,42 +1,82 @@
 #include "GameManager.hpp"
 
-#include <stdio.h>
+#include <cstdio>
 
+#include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
+#include "Chain.hpp"
+#include "Controller.hpp"
 #include "EclManager.hpp"
 #include "EnemyManager.hpp"
-#include "Global.hpp"
+#include "GameErrorContext.hpp"
+#include "GameWindow.hpp"
 #include "Gui.hpp"
 #include "Player.hpp"
+#include "Rng.hpp"
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
+#include "Touch.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
-#include "i18n.hpp"
+#include "graphics/ZunGraphics.hpp"
 
-// GLOBAL: TH07 0x0049f5d0
 i32 g_RankArray[6][3] = {
-    {16, 12, 20},
-    {16, 10, 32},
-    {16, 10, 32},
-    {16, 10, 32},
-    {16, 15, 16},
-    {16, 15, 16},
+    {16, 12, 20}, {16, 10, 32}, {16, 10, 32}, {16, 10, 32}, {16, 15, 16}, {16, 15, 16},
 };
 
 // ZUN name: Stg
 // GLOBAL: TH07 0x00626270
 GameManager g_GameManager;
 
-// GLOBAL: TH07 0x0062f8b4
 ChainElem g_GameManagerCalcChain;
 
-// GLOBAL: TH07 0x0062f8d4
 ChainElem g_GameManagerDrawChain;
 
-// FUNCTION: TH07 0x0042d6d8
+GameManager::GameManager()
+{
+    memset(this, 0, sizeof(GameManager));
+    this->arcadeRegionTopLeftPos.x = 32.0f;
+    this->arcadeRegionTopLeftPos.y = 16.0f;
+    this->arcadeRegionSize.x = 384.0f;
+    this->arcadeRegionSize.y = 448.0f;
+    this->demoIdx = 2;
+    this->phantasmUnlocked = 1;
+}
+
+void GameManager::AddLivesRemaining(i32 amount)
+{
+    if (CheckGameIntegrity())
+    {
+        NUKE_SUPERVISOR();
+    }
+    this->globals->livesRemaining += (f32)amount;
+    RegenerateGameIntegrityCsum();
+}
+
+void GameManager::AddBombsRemaining(i32 amount)
+{
+    if (CheckGameIntegrity())
+    {
+        NUKE_SUPERVISOR();
+    }
+    this->globals->bombsRemaining += (f32)amount;
+    RegenerateGameIntegrityCsum();
+}
+
+void GameManager::ResetRegionsPos()
+{
+    this->arcadeRegionTopLeftPos.x = 32.0f;
+    this->arcadeRegionTopLeftPos.y = 16.0f;
+    this->arcadeRegionSize.x = 384.0f;
+    this->arcadeRegionSize.y = 448.0f;
+    this->playerMovementAreaTopLeftPos.x = 8.0f;
+    this->playerMovementAreaTopLeftPos.y = 16.0f;
+    this->playerMovementAreaSize.x = 368.0f;
+    this->playerMovementAreaSize.y = 416.0f;
+}
+
 i32 GameManager::IsInBounds(f32 x, f32 y, f32 widthPx, f32 heightPx)
 {
     if (widthPx / 2.0f + x < 0.0f)
@@ -62,8 +102,6 @@ i32 GameManager::IsInBounds(f32 x, f32 y, f32 widthPx, f32 heightPx)
     return 1;
 }
 
-#pragma var_order(i, sum)
-// FUNCTION: TH07 0x0042d75a
 i32 GameManager::CalcChecksum(u8 *address, i32 size)
 {
     i32 sum;
@@ -78,21 +116,17 @@ i32 GameManager::CalcChecksum(u8 *address, i32 size)
     return sum;
 }
 
-// FUNCTION: TH07 0x0042d7be
 i32 GameManager::ComputeGameIntegrityCsum()
 {
     i32 csum = CalcChecksum((u8 *)g_GameManager.globals->rng1,
-                            (i32) & this->globals->curCsum - (i32)this->globals->rng1);
+                            (u8 *)&this->globals->curCsum - (u8 *)this->globals->rng1);
     csum += CalcChecksum((u8 *)g_GameManager.globals->csumData,
                          sizeof(g_GameManager.globals->csumData));
-    csum += CalcChecksum((u8 *)g_GameManager.defaultCfg,
-                         sizeof(GameConfiguration));
-    csum += CalcChecksum((u8 *)&g_Supervisor.cfg,
-                         sizeof(GameConfiguration));
+    csum += CalcChecksum((u8 *)g_GameManager.defaultCfg, sizeof(GameConfiguration));
+    csum += CalcChecksum((u8 *)&g_Supervisor.cfg, sizeof(GameConfiguration));
     return csum;
 }
 
-// FUNCTION: TH07 0x0042d83a
 void GameManager::ExtendFromPoints()
 {
     if ((i32)this->globals->livesRemaining < 8)
@@ -114,47 +148,53 @@ void GameManager::ExtendFromPoints()
     }
 }
 
-#pragma var_order(csum, i, scoreIncrement)
-// FUNCTION: TH07 0x0042d8d5
+void GameManager::Pause()
+{
+    this->isInPauseMenu = TRUE;
+    g_GameManager.arcadeRegionTopLeftPos.x = 32.0f;
+    g_GameManager.arcadeRegionTopLeftPos.y = 16.0f;
+    g_GameManager.arcadeRegionSize.x = 384.0f;
+    g_GameManager.arcadeRegionSize.y = 448.0f;
+    this->isPaused = TRUE;
+    g_Player.prevPos = g_Player.pos;
+    g_Player.prevOptionsPosition[0] = g_Player.optionsPosition[0];
+    g_Player.prevOptionsPosition[1] = g_Player.optionsPosition[1];
+    g_Stage.prevCam = g_Stage.cam;
+    g_Stage.prevPos = g_Stage.pos;
+    if (g_GameManager.currentStage != STAGE6 || g_Gui.frameCounter >= 300)
+    {
+        g_SoundPlayer.PushCommand(AUDIO_PAUSE, 0, "Pause");
+    }
+    g_SoundPlayer.PlaySoundByIdx(SOUND_PAUSED, 0);
+    g_Supervisor.UpdateTime();
+}
+
 u32 GameManager::OnUpdate(GameManager *arg)
 {
     u32 scoreIncrement;
     u32 i;
     i32 csum;
 
-    if (arg->isInRetryMenu == 0 && arg->isInPauseMenu == 0 &&
-        arg->demo == 0 &&
+    if (arg->isInRetryMenu == 0 && arg->isInPauseMenu == 0 && arg->demo == 0 &&
         (arg->slowModeSlowActive == 0 && WAS_PRESSED_RAW(TH_BUTTON_MENU)))
     {
-        arg->isInPauseMenu = 1;
-        g_GameManager.arcadeRegionTopLeftPos.x = 32.0f;
-        g_GameManager.arcadeRegionTopLeftPos.y = 16.0f;
-        g_GameManager.arcadeRegionSize.x = 384.0f;
-        g_GameManager.arcadeRegionSize.y = 448.0f;
-        arg->isPaused = TRUE;
-        if (g_GameManager.currentStage != STAGE6 || g_Gui.frameCounter >= 300)
-        {
-            // STRING: TH07 0x00498a40
-            g_SoundPlayer.PushCommand(AUDIO_PAUSE, 0, "Pause");
-        }
-        g_SoundPlayer.PlaySoundByIdx(SOUND_PAUSED, 0);
-        g_Supervisor.UpdateTime();
+        arg->Pause();
     }
-    g_Supervisor.viewport.X = arg->arcadeRegionTopLeftPos.x;
-    g_Supervisor.viewport.Y = arg->arcadeRegionTopLeftPos.y;
-    g_Supervisor.viewport.Width = arg->arcadeRegionSize.x;
-    g_Supervisor.viewport.Height = arg->arcadeRegionSize.y;
-    g_Supervisor.viewport.MinZ = 0.0f;
-    g_Supervisor.viewport.MaxZ = 1.0f;
+    g_Supervisor.viewport.x = arg->arcadeRegionTopLeftPos.x;
+    g_Supervisor.viewport.y = arg->arcadeRegionTopLeftPos.y;
+    g_Supervisor.viewport.width = arg->arcadeRegionSize.x;
+    g_Supervisor.viewport.height = arg->arcadeRegionSize.y;
+    g_Supervisor.viewport.minZ = 0.0f;
+    g_Supervisor.viewport.maxZ = 1.0f;
     g_AnmManager->SetCameraMode(255);
-    if (g_GameManager.replay &&
-        g_GameManager.replayStage == 1 &&
-        !g_Gui.HasCurrentMsgIdx())
+    if (g_GameManager.replay && g_GameManager.replayStage == 1 && !g_Gui.HasCurrentMsgIdx())
     {
         arg->bulletLagTime++;
         if ((g_Supervisor.curFps < 20 && arg->bulletLagTime % 3 != 0) ||
-            (g_Supervisor.curFps >= 20 && g_Supervisor.curFps < 30 && arg->bulletLagTime % 2 != 0) ||
-            (g_Supervisor.curFps >= 30 && g_Supervisor.curFps < 40 && arg->bulletLagTime % 3 == 0) ||
+            (g_Supervisor.curFps >= 20 && g_Supervisor.curFps < 30 &&
+             arg->bulletLagTime % 2 != 0) ||
+            (g_Supervisor.curFps >= 30 && g_Supervisor.curFps < 40 &&
+             arg->bulletLagTime % 3 == 0) ||
             (g_Supervisor.curFps >= 40 && g_Supervisor.curFps < 50 && arg->bulletLagTime % 6 == 0))
         {
             return CHAIN_CALLBACK_RESULT_BREAK;
@@ -171,8 +211,7 @@ u32 GameManager::OnUpdate(GameManager *arg)
             (arg->demoIdx == 1 && arg->demoFrames == 7020) ||
             (arg->demoIdx == 2 && arg->demoFrames == 4620))
         {
-            ScreenEffect::RegisterChain(
-                SCREEN_EFFECT_FADE_IN_PLAY_AREA, 120, 0, 0, 0);
+            ScreenEffect::RegisterChain(SCREEN_EFFECT_FADE_IN_PLAY_AREA, 120, 0, 0, 0);
             g_Supervisor.FadeOutMusic(3.0f);
         }
         if ((arg->demoIdx == 0 && arg->demoFrames >= 8220) ||
@@ -195,8 +234,7 @@ u32 GameManager::OnUpdate(GameManager *arg)
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat2); i++)
     {
-        if (arg->globals->rngFloat2[i] < 6543.0f ||
-            arg->globals->rngFloat2[i] > 106543.0f)
+        if (arg->globals->rngFloat2[i] < 6543.0f || arg->globals->rngFloat2[i] > 106543.0f)
         {
             g_GameManager.csumFloat = -9999.0f;
         }
@@ -204,8 +242,7 @@ u32 GameManager::OnUpdate(GameManager *arg)
     arg->notInMenu = !arg->isInRetryMenu && !arg->isInPauseMenu;
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat1); i++)
     {
-        if (arg->globals->rngFloat1[i] < 6543.0f ||
-            arg->globals->rngFloat1[i] > 106543.0f)
+        if (arg->globals->rngFloat1[i] < 6543.0f || arg->globals->rngFloat1[i] > 106543.0f)
         {
             g_GameManager.csumFloat = -9999.0f;
         }
@@ -217,13 +254,9 @@ u32 GameManager::OnUpdate(GameManager *arg)
             g_GameManager.csumFloat = -9999.0f;
         }
     }
-    // The original cleared the target to the sky-fog colour here, inside OnUpdate. D3D
-    // applied that clear to the back buffer before Present, which worked because the
-    // stage repainted everything afterwards; here OnUpdate runs *after* the draw chain
-    // for the frame, so the same clear wiped the frame that was about to be presented.
-    // The stage already clears its own background when it draws, so nothing is needed.
-    if (arg->isInPauseMenu == 1 || arg->isInPauseMenu == 2 ||
-        arg->isInRetryMenu)
+    g_Supervisor.gfxDevice->SetClearColor(g_Stage.skyFog.color);
+    g_Supervisor.gfxDevice->Clear(CLEAR_DEPTH_BUFFER);
+    if (arg->isInPauseMenu == 1 || arg->isInPauseMenu == 2 || arg->isInRetryMenu)
     {
         return CHAIN_CALLBACK_RESULT_BREAK;
     }
@@ -254,11 +287,9 @@ u32 GameManager::OnUpdate(GameManager *arg)
         }
         if (arg->globals->guiScore + arg->globals->guiScoreDifference > arg->globals->score)
         {
-            arg->globals->guiScoreDifference =
-                arg->globals->score - arg->globals->guiScore;
+            arg->globals->guiScoreDifference = arg->globals->score - arg->globals->guiScore;
         }
-        arg->globals->guiScore =
-            arg->globals->guiScore + arg->globals->guiScoreDifference;
+        arg->globals->guiScore = arg->globals->guiScore + arg->globals->guiScoreDifference;
         if (arg->globals->guiScore >= arg->globals->score)
         {
             arg->globals->guiScoreDifference = 0;
@@ -272,24 +303,21 @@ u32 GameManager::OnUpdate(GameManager *arg)
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(arg->globals->rngFloat3); i++)
     {
-        if (arg->globals->rngFloat3[i] < 6543.0f ||
-            arg->globals->rngFloat3[i] > 106543.0f)
+        if (arg->globals->rngFloat3[i] < 6543.0f || arg->globals->rngFloat3[i] > 106543.0f)
         {
             g_GameManager.csumFloat = -9999.0f;
         }
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(arg->globals->rngFloat4); i++)
     {
-        if (arg->globals->rngFloat4[i] < 6543.0f ||
-            arg->globals->rngFloat4[i] > 106543.0f)
+        if (arg->globals->rngFloat4[i] < 6543.0f || arg->globals->rngFloat4[i] > 106543.0f)
         {
             g_GameManager.csumFloat = -9999.0f;
         }
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(arg->globals->csumData); i++)
     {
-        if (arg->globals->csumData[i] < 6543 ||
-            arg->globals->csumData[i] > 106543)
+        if (arg->globals->csumData[i] < 6543 || arg->globals->csumData[i] > 106543)
         {
             g_GameManager.csumFloat = -9999.0f;
         }
@@ -299,8 +327,10 @@ u32 GameManager::OnUpdate(GameManager *arg)
         g_GameManager.slowModeSlowActive = 0;
         arg->bulletLagTime = arg->bulletLagTime + 1;
         if ((g_BulletManager.bulletCount >= 320 && arg->bulletLagTime % 3 == 0) ||
-            (g_BulletManager.bulletCount < 320 && g_BulletManager.bulletCount >= 224 && arg->bulletLagTime % 4 == 0) ||
-            (g_BulletManager.bulletCount < 224 && g_BulletManager.bulletCount >= 128 && arg->bulletLagTime % 5 == 0))
+            (g_BulletManager.bulletCount < 320 && g_BulletManager.bulletCount >= 224 &&
+             arg->bulletLagTime % 4 == 0) ||
+            (g_BulletManager.bulletCount < 224 && g_BulletManager.bulletCount >= 128 &&
+             arg->bulletLagTime % 5 == 0))
         {
             g_GameManager.slowModeSlowActive = 1;
             return CHAIN_CALLBACK_RESULT_BREAK;
@@ -314,7 +344,6 @@ u32 GameManager::OnUpdate(GameManager *arg)
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-// FUNCTION: TH07 0x0042e1d4
 u32 GameManager::OnDraw(GameManager *arg)
 {
     if (arg->isInPauseMenu)
@@ -324,11 +353,9 @@ u32 GameManager::OnDraw(GameManager *arg)
     return CHAIN_CALLBACK_RESULT_CONTINUE;
 }
 
-#pragma var_order(rect, spriteVm, spritePos)
-// FUNCTION: TH07 0x0042e1f8
 void GameManager::DrawLoadingSprite()
 {
-    Float3 spritePos;
+    ZunVec3 spritePos;
     AnmVm spriteVm;
     ZunRect rect;
 
@@ -340,17 +367,14 @@ void GameManager::DrawLoadingSprite()
     spritePos.x = 528.0f;
     spritePos.y = 448.0f;
     spritePos.z = 0.0f;
-    memcpy(&spriteVm.pos, spritePos, sizeof(Float3));
-    // The original presented twice here; one clear-and-swap is enough now that the
-    // swap is explicit and has no device-lost case to recover from.
-    RendererClear(0.0f, 0.0f, 0.0f);
-    RendererBeginFrame();
+    spriteVm.pos = spritePos;
+    g_Supervisor.gfxDevice->BeginFrame();
     ScreenEffect::DrawSquare(&rect, 0xa0000000);
     g_AnmManager->DrawNoRotation(&spriteVm);
-    g_AnmManager->Flush();
+    g_Supervisor.gfxDevice->EndFrame();
+    g_Supervisor.gfxDevice->SwapBuffers();
 }
 
-// FUNCTION: TH07 0x0042e38c
 void GameManager::InitializeRank()
 {
     this->rank.rank = g_RankArray[g_GameManager.difficulty][0];
@@ -358,8 +382,6 @@ void GameManager::InitializeRank()
     this->rank.maxRank = g_RankArray[g_GameManager.difficulty][2];
 }
 
-#pragma var_order(csum, i)
-// FUNCTION: TH07 0x0042e3da
 void GameManager::InitializeRngAndCsum()
 {
     u32 i;
@@ -375,23 +397,19 @@ void GameManager::InitializeRngAndCsum()
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat1); i++)
     {
-        g_GameManager.globals->rngFloat1[i] =
-            g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
+        g_GameManager.globals->rngFloat1[i] = g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat2); i++)
     {
-        g_GameManager.globals->rngFloat2[i] =
-            g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
+        g_GameManager.globals->rngFloat2[i] = g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat3); i++)
     {
-        g_GameManager.globals->rngFloat3[i] =
-            g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
+        g_GameManager.globals->rngFloat3[i] = g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->rngFloat4); i++)
     {
-        g_GameManager.globals->rngFloat4[i] =
-            g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
+        g_GameManager.globals->rngFloat4[i] = g_Rng.GetRandomFloatInRange(100000.0f) + 6543.0f;
     }
     for (i = 0; i < ARRAY_SIZE_SIGNED(g_GameManager.globals->csumData); i++)
     {
@@ -400,12 +418,9 @@ void GameManager::InitializeRngAndCsum()
     g_GameManager.globals->curCsum = g_GameManager.globals->rng1[2];
     i32 csum = g_GameManager.ComputeGameIntegrityCsum();
     g_GameManager.globals->csumAsSum = csum;
-    g_GameManager.csumFloat = (f32)csum +
-                              (f32)g_GameManager.globals->rng2[3];
+    g_GameManager.csumFloat = (f32)csum + (f32)g_GameManager.globals->rng2[3];
 }
 
-#pragma var_order(catk, i, scoreDat, j)
-// FUNCTION: TH07 0x0042e634
 ZunResult ResultScreen::ParseScores()
 {
     i32 j;
@@ -418,10 +433,10 @@ ZunResult ResultScreen::ParseScores()
     memset(g_GameManager.catk, 0, sizeof(g_GameManager.catk));
     for (i = 0; i < SPELLCARD_COUNT; i++, catk++)
     {
-        catk->magic = 0x4b544143;
-        catk->th7kLen2 = sizeof(Catk);
-        catk->th7kLen = sizeof(Catk);
-        catk->version = 1;
+        catk->base.magic = 0x4b544143;
+        catk->base.th7kLen2 = sizeof(Catk);
+        catk->base.th7kLen = sizeof(Catk);
+        catk->base.version = 1;
         catk->idx = (i16)i;
         for (j = 0; j < ARRAY_SIZE_SIGNED(catk->numAttemptsPerShot); j++)
         {
@@ -430,17 +445,16 @@ ZunResult ResultScreen::ParseScores()
             catk->highScorePerShot[j] = 0;
         }
     }
-    scoreDat = OpenScore("score.dat");
+    scoreDat = OpenScore(FileSystem::GetPrefPath("score.dat").c_str());
     if (!scoreDat)
     {
-        // STRING: TH07 0x00498090
-        g_GameErrorContext.Log(TH_ERR_SCORE_LOAD_FAIL);
+        g_GameErrorContext.Log("error : スコアファイルの読み取りに失敗しました\n");
         return ZUN_ERROR;
     }
 
-    g_GameManager.globals->highScore = GetHighScore(scoreDat, NULL, (u32)g_GameManager.shotTypeAndCharacter,
-                                                    g_GameManager.difficulty,
-                                                    &g_GameManager.globals->highScoreNumContinues);
+    g_GameManager.globals->highScore =
+        GetHighScore(scoreDat, NULL, (u32)g_GameManager.shotTypeAndCharacter,
+                     g_GameManager.difficulty, &g_GameManager.globals->highScoreNumContinues);
     ParseCatk(scoreDat, g_GameManager.catk);
     ParseClrd(scoreDat, g_GameManager.clrd);
     ParsePscr(scoreDat, &g_GameManager.pscr[0][0][0]);
@@ -448,8 +462,8 @@ ZunResult ResultScreen::ParseScores()
     {
         g_GameManager.globals->highScore =
             g_GameManager
-                .pscr[g_GameManager.shotTypeAndCharacter]
-                     [g_GameManager.currentStage][g_GameManager.difficulty]
+                .pscr[g_GameManager.shotTypeAndCharacter][g_GameManager.currentStage]
+                     [g_GameManager.difficulty]
                 .score;
         g_GameManager
             .pscr[g_GameManager.shotTypeAndCharacter][g_GameManager.currentStage]
@@ -462,54 +476,46 @@ ZunResult ResultScreen::ParseScores()
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0042e81b
 void IncrementCappedAgain(u32 *param, u32 cap)
 {
     // cap seemingly completely unused here
-    if (*param < 999999)
+    if (*param < cap)
     {
         (*param)++; // otherwise duplicate of incrementcapped from asciimanager
     }
 }
 
-#pragma var_order(size, shotTypeAndChar, oldSeed)
-// FUNCTION: TH07 0x0042e83e
 ZunResult GameManager::AddedCallback(GameManager *arg)
 {
     u16 oldSeed;
     i32 shotTypeAndChar;
     u32 size;
 
+    Touch::ResetRunUsage();
+
+    g_GameWindow.ResetAccumulator();
     g_Supervisor.checkTiming = FALSE;
     arg->difficultyMask = 1 << arg->difficulty;
     arg->shotTypeAndCharacter = arg->character * 2 + arg->shotType;
-    g_Supervisor.currentTime = timeGetTime();
+    g_Supervisor.currentTime = SDL_GetTicks();
     g_Supervisor.effectiveFramerateMultiplier = 1.0f;
     if (g_Supervisor.curState != SUPERVISOR_STATE_NEXT_STAGE)
     {
         DrawLoadingSprite();
-
-        if (arg->defaultCfg)
-        {
-            ZUN_DELETE(arg->defaultCfg);
-        }
-
-        if (arg->globals)
-        {
-            ZUN_DELETE(arg->globals);
-        }
+        SAFE_DELETE(arg->defaultCfg);
+        SAFE_DELETE(arg->globals);
 
         size = g_Rng.GetRandomU32InRange(65535) + 16;
         arg->tmpBuffer = malloc(size);
-        arg->defaultCfg = ZUN_NEW(GameConfiguration, "");
-        arg->globals = ZUN_NEW(ZunGlobals, "");
+        arg->defaultCfg = new GameConfiguration;
+        arg->globals = new ZunGlobals;
         InitializeRngAndCsum();
         *arg->defaultCfg = g_Supervisor.cfg;
-        ZUN_FREE(arg->tmpBuffer);
+        free(arg->tmpBuffer);
         arg->powerItemCountForScore = 0;
         arg->cherry = arg->globals->cherryStart;
         arg->cherryPlus = arg->globals->cherryStart;
-        if (g_GameManager.difficulty >= DIFF_EXTRA)
+        if (g_GameManager.difficulty >= 4)
         {
             arg->defaultCfg->lifeCount = 2;
         }
@@ -519,17 +525,18 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         }
         if (Player::RegisterChain(0) != ZUN_SUCCESS)
         {
-            g_GameErrorContext.Log(TH_ERR_PLAYER_INIT_FAIL);
+            g_GameErrorContext.Log("error : プレイヤーの初期化に失敗しました\n");
             return ZUN_ERROR;
         }
         if (!g_GameManager.replay)
         {
-            g_GameManager.SetLives(arg->defaultCfg->lifeCount);
-            g_GameManager.SetBombsRemainingAndComputeCsum(
-                g_Player.shooterData->initialBombs);
+            g_GameManager.SetLivesRemaining(arg->defaultCfg->lifeCount);
+            g_GameManager.RegenerateGameIntegrityCsum();
+            g_GameManager.SetBombsRemainingAndComputeCsum(g_Player.shooterData->initialBombs);
         }
         arg->ResetRegionsPos();
-        arg->SetPower(0.0f);
+        arg->globals->currentPower = 0.0f;
+        arg->RegenerateGameIntegrityCsum();
         arg->totalPlayTime = 0;
         arg->globals->guiScore = 0;
         arg->globals->score = 0;
@@ -538,7 +545,7 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         arg->globals->numRetries = 0;
         arg->globals->grazeInTotal = 0;
         arg->globals->pointItemsCollectedForExtend = 0;
-        if (arg->difficulty < DIFF_EXTRA)
+        if (arg->difficulty < 4)
         {
             arg->globals->nextNeededPointItemsForExtend = 50;
         }
@@ -553,8 +560,10 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
             return ZUN_ERROR;
         }
         arg->InitializeRank();
-        arg->SetDeaths(0);
-        arg->SetBombsUsed(0);
+        arg->globals->deaths = 0.0f;
+        arg->RegenerateGameIntegrityCsum();
+        arg->globals->bombsUsed = 0.0f;
+        arg->RegenerateGameIntegrityCsum();
         arg->globals->spellCardsCaptured = 0;
         if (!g_GameManager.practice)
         {
@@ -627,11 +636,9 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
             if (!arg->defaultCfg->slowMode)
             {
                 IncrementCappedAgain(
-                    &g_GameManager.plst.playDataByDifficulty[g_GameManager.difficulty]
-                         .playCount,
+                    &g_GameManager.plst.playDataByDifficulty[g_GameManager.difficulty].playCount,
                     999999);
-                IncrementCappedAgain(&g_GameManager.plst.playDataByDifficulty[6].playCount,
-                                     999999);
+                IncrementCappedAgain(&g_GameManager.plst.playDataByDifficulty[6].playCount, 999999);
                 IncrementCappedAgain(
                     &g_GameManager.plst.playDataByDifficulty[g_GameManager.difficulty]
                          .playCountPerShotType[arg->shotTypeAndCharacter],
@@ -652,12 +659,11 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
                 if (g_GameManager.practice)
                 {
                     IncrementCappedAgain(
-                        &g_GameManager.plst
-                             .playDataByDifficulty[g_GameManager.difficulty]
+                        &g_GameManager.plst.playDataByDifficulty[g_GameManager.difficulty]
                              .practiceCount,
                         999999);
-                    IncrementCappedAgain(
-                        &g_GameManager.plst.playDataByDifficulty[6].practiceCount, 999999);
+                    IncrementCappedAgain(&g_GameManager.plst.playDataByDifficulty[6].practiceCount,
+                                         999999);
                 }
             }
         }
@@ -672,7 +678,7 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         arg->globals->guiScoreDifference = 0;
         if (Player::RegisterChain(0) != ZUN_SUCCESS)
         {
-            g_GameErrorContext.Log(TH_ERR_PLAYER_INIT_FAIL);
+            g_GameErrorContext.Log("error : プレイヤーの初期化に失敗しました\n");
             return ZUN_ERROR;
         }
     }
@@ -686,19 +692,15 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         shotTypeAndChar = g_GameManager.shotTypeAndCharacter;
         if (arg->globals->numRetries == 0 &&
             (i32)(u32)arg->clrd[shotTypeAndChar]
-                    .difficultyClearedWithRetries[g_GameManager.difficulty] <
-                arg->currentStage - 1)
+                    .difficultyClearedWithRetries[g_GameManager.difficulty] < arg->currentStage - 1)
         {
-            arg->clrd[shotTypeAndChar]
-                .difficultyClearedWithRetries[g_GameManager.difficulty] =
+            arg->clrd[shotTypeAndChar].difficultyClearedWithRetries[g_GameManager.difficulty] =
                 arg->currentStage - 1;
         }
         if ((i32)(u32)arg->clrd[shotTypeAndChar]
-                .difficultyClearedWithoutRetries[g_GameManager.difficulty] <
-            arg->currentStage - 1)
+                .difficultyClearedWithoutRetries[g_GameManager.difficulty] < arg->currentStage - 1)
         {
-            arg->clrd[shotTypeAndChar]
-                .difficultyClearedWithoutRetries[g_GameManager.difficulty] =
+            arg->clrd[shotTypeAndChar].difficultyClearedWithoutRetries[g_GameManager.difficulty] =
                 arg->currentStage - 1;
         }
     }
@@ -709,7 +711,8 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
         case STAGE1:
             break;
         default:
-            arg->SetPower(128.0f);
+            arg->globals->currentPower = 128.0f;
+            arg->RegenerateGameIntegrityCsum();
             break;
         }
     }
@@ -724,45 +727,44 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     arg->stageRngSeed = g_Rng.seed;
     if (Stage::RegisterChain(arg->currentStage) != ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_STAGE_INIT_FAIL);
+        g_GameErrorContext.Log("error : 背景データの初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
     if (BulletManager::RegisterChain("data/etama.anm") != ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_BULLET_INIT_FAIL);
+        g_GameErrorContext.Log("error : 敵弾の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
-    if (EnemyManager::RegisterChain(
-            g_EnemyAnmStageFiles[arg->currentStage].anmPath1,
-            g_EnemyAnmStageFiles[arg->currentStage].anmPath2) != ZUN_SUCCESS)
+    if (EnemyManager::RegisterChain(g_EnemyAnmStageFiles[arg->currentStage].anmPath1,
+                                    g_EnemyAnmStageFiles[arg->currentStage].anmPath2) !=
+        ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_ENEMY_INIT_FAIL);
+        g_GameErrorContext.Log("error : 敵の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
     if (g_EclManager.Load(g_EclPaths[arg->currentStage]) != ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_ECL_INIT_FAIL);
+        g_GameErrorContext.Log("error : 敵頭脳の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
     if (EffectManager::RegisterChain() != ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_EFFECT_INIT_FAIL);
+        g_GameErrorContext.Log("error : エフェクトの初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
     if (Gui::RegisterChain() != ZUN_SUCCESS)
     {
-        g_GameErrorContext.Log(TH_ERR_GUI_INIT_FAIL);
+        g_GameErrorContext.Log("error : 2D表示の初期化に失敗しました\n");
         return ZUN_ERROR;
     }
 
     if (!g_GameManager.replay)
     {
-        // STRING: TH07 0x00497e1c
         ReplayManager::RegisterChain(FALSE, "replay/th7_00.rpy");
     }
     g_Supervisor.LoadAudio(0, g_Stage.stdData->bgmPaths[0]);
@@ -791,18 +793,14 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     g_AsciiManager.InitializeVms();
     g_GameManager.slowModeSlowActive = 0;
     Supervisor::DrawFpsCounter(0);
-    // STRING: TH07 0x00497e08
-    utils::DebugPrint2("random seed %d %d\r\n", (u32)g_Rng.seed,
-                       g_Rng.GetGenCount());
+    Supervisor::DebugPrint("random seed %d %d\n", (u32)g_Rng.seed, g_Rng.GetGenCount());
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0042f2e4
 ZunResult GameManager::DeletedCallback(GameManager *arg)
 {
     g_Supervisor.StopAudio();
-    if (g_Supervisor.cfg.musicMode == MUSIC_MIDI &&
-        g_Supervisor.midiOutput)
+    if (g_Supervisor.cfg.musicMode == MUSIC_MIDI && g_Supervisor.midiOutput)
     {
         g_Supervisor.midiOutput->PlayLoaded(30);
     }
@@ -829,7 +827,6 @@ ZunResult GameManager::DeletedCallback(GameManager *arg)
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0042f3c5
 ZunResult GameManager::RegisterChain()
 {
     GameManager *mgr = &g_GameManager;
@@ -837,8 +834,7 @@ ZunResult GameManager::RegisterChain()
     g_GameManagerCalcChain.addedCallback = NULL;
     g_GameManagerCalcChain.deletedCallback = NULL;
     g_GameManagerCalcChain.addedCallback = (ChainLifecycleCallback)AddedCallback;
-    g_GameManagerCalcChain.deletedCallback =
-        (ChainLifecycleCallback)DeletedCallback;
+    g_GameManagerCalcChain.deletedCallback = (ChainLifecycleCallback)DeletedCallback;
     g_GameManagerCalcChain.arg = mgr;
     mgr->framesThisStage = 0;
     if (g_Chain.AddToCalcChain(&g_GameManagerCalcChain, CHAIN_PRIO_CALC_GAMEMANAGER))
@@ -854,7 +850,6 @@ ZunResult GameManager::RegisterChain()
     return ZUN_SUCCESS;
 }
 
-// FUNCTION: TH07 0x0042f45d
 void GameManager::CutChain()
 {
     g_Chain.Cut(&g_GameManagerCalcChain);
@@ -866,7 +861,6 @@ void GameManager::CutChain()
     g_GameManager.globals->guiScore = g_GameManager.globals->score;
 }
 
-// FUNCTION: TH07 0x0042f4aa
 void GameManager::IncreaseSubrank(i32 amount)
 {
     this->subrank += amount;
@@ -881,7 +875,6 @@ void GameManager::IncreaseSubrank(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f526
 void GameManager::DecreaseSubrank(i32 amount)
 {
     this->subrank -= amount;
@@ -896,7 +889,6 @@ void GameManager::DecreaseSubrank(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f5a2
 void GameManager::AddCherryPlus(i32 amount)
 {
     i32 oldCherry = this->cherry;
@@ -920,7 +912,6 @@ void GameManager::AddCherryPlus(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f69f
 void GameManager::AddCherry(i32 amount)
 {
     i32 oldCherry = this->cherry;
@@ -935,10 +926,8 @@ void GameManager::AddCherry(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f736
 void GameManager::IncreaseCherry(i32 amount)
 {
-    i32 idk = this->cherry;
     this->cherry = this->cherry + amount;
     if (this->cherry > this->cherryMax)
     {
@@ -946,7 +935,6 @@ void GameManager::IncreaseCherry(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f789
 void GameManager::IncreaseCherryMax(i32 amount)
 {
     this->cherryMax = this->cherryMax + amount;
@@ -956,7 +944,6 @@ void GameManager::IncreaseCherryMax(i32 amount)
     }
 }
 
-// FUNCTION: TH07 0x0042f7df
 ZunBool GameManager::HasReachedMaxClearsAnyDifficulty(i32 shotType)
 {
     return this->clrd[shotType].difficultyClearedWithRetries[DIFF_EASY] == 99 ||
@@ -965,7 +952,6 @@ ZunBool GameManager::HasReachedMaxClearsAnyDifficulty(i32 shotType)
            this->clrd[shotType].difficultyClearedWithRetries[DIFF_LUNATIC] == 99;
 }
 
-// FUNCTION: TH07 0x0042f853
 ZunBool GameManager::HasUnlockedPhantasm(i32 shotType)
 {
     i32 numSuccesses = 0;
@@ -976,15 +962,13 @@ ZunBool GameManager::HasUnlockedPhantasm(i32 shotType)
             numSuccesses++;
         }
     }
-    if (numSuccesses >= 60 &&
-        this->clrd[shotType].difficultyClearedWithRetries[DIFF_EXTRA] == 99)
+    if (numSuccesses >= 60 && this->clrd[shotType].difficultyClearedWithRetries[DIFF_EXTRA] == 99)
     {
         this->clrd[shotType].difficultyClearedWithRetries[DIFF_PHANTASM] = 99;
     }
     return this->clrd[shotType].difficultyClearedWithRetries[DIFF_PHANTASM] == 99;
 }
 
-// FUNCTION: TH07 0x0042f8de
 ZunBool GameManager::HasReachedMaxClearsAnyShotType()
 {
     return HasReachedMaxClearsAnyDifficulty(SHOT_REIMU_A) ||
@@ -995,8 +979,6 @@ ZunBool GameManager::HasReachedMaxClearsAnyShotType()
            HasReachedMaxClearsAnyDifficulty(SHOT_SAKUYA_B);
 }
 
-#pragma var_order(spellCardsCaptured, i, j)
-// FUNCTION: TH07 0x0042f94c
 ZunBool GameManager::HasUnlockedPhantasmAndMaxClears()
 {
     i32 j;

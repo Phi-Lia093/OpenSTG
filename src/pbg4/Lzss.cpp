@@ -20,50 +20,47 @@
 
 #include "Lzss.hpp"
 
-#include <windows.h>
+#include <cstdlib>
 
 #define LZSS_LOOKAHEAD_SIZE ((1 << LZSS_LENGTH_BITS) + 2)
 #define LZSS_DICTSIZE_MASK (LZSS_DICTSIZE - 1)
 #define LZSS_DICTPOS_MOD(pos, amount) ((pos + amount) & LZSS_DICTSIZE_MASK)
 
-// GLOBAL: TH07 0x0049fe30
 Lzss::LzssNode g_LzssTree[LZSS_DICTSIZE + 1];
-
-// GLOBAL: TH07 0x004b7e40
 u8 g_LzssDictionary[LZSS_DICTSIZE];
 
-#define ENC_NEXT_BIT()          \
-    inBitMask >>= 1;            \
-    if (inBitMask == 0)         \
-    {                           \
-        *dstCursor++ = curByte; \
-        checksum += curByte;    \
-        curByte = 0;            \
-        inBitMask = 0x80;       \
+#define FALSE 0
+
+#define ENC_NEXT_BIT()                                                                             \
+    inBitMask >>= 1;                                                                               \
+    if (inBitMask == 0)                                                                            \
+    {                                                                                              \
+        *dstCursor++ = curByte;                                                                    \
+        checksum += curByte;                                                                       \
+        curByte = 0;                                                                               \
+        inBitMask = 0x80;                                                                          \
     }
 
-#define ENC_WRITE_FLAG_BIT(bit) \
-    if (bit)                    \
-    {                           \
-        curByte |= inBitMask;   \
-    }                           \
+#define ENC_WRITE_FLAG_BIT(bit)                                                                    \
+    if (bit)                                                                                       \
+    {                                                                                              \
+        curByte |= inBitMask;                                                                      \
+    }                                                                                              \
     ENC_NEXT_BIT();
 
-#define ENC_WRITE_BITS(bitCount, condition) \
-    bitfieldMask = 0x1 << (bitCount - 1);   \
-    while (bitfieldMask != 0)               \
-    {                                       \
-        if (condition)                      \
-        {                                   \
-            curByte |= inBitMask;           \
-        }                                   \
-        ENC_NEXT_BIT();                     \
-        bitfieldMask >>= 1;                 \
+#define ENC_WRITE_BITS(bitCount, condition)                                                        \
+    bitfieldMask = 0x1 << (bitCount - 1);                                                          \
+    while (bitfieldMask != 0)                                                                      \
+    {                                                                                              \
+        if (condition)                                                                             \
+        {                                                                                          \
+            curByte |= inBitMask;                                                                  \
+        }                                                                                          \
+        ENC_NEXT_BIT();                                                                            \
+        bitfieldMask >>= 1;                                                                        \
     }
 
-#pragma var_order(curByte, dst, dstCursor, matchOffset, i, bytesToCopyToDict, inBitMask, srcCursor, matchLength, \
-                  checksum, lookAheadBytes, dictValue, dictHead, bitfieldMask)
-LPBYTE Lzss::Compress(LPBYTE src, i32 srcLen, i32 *outSize)
+u8 *Lzss::Compress(u8 *src, i32 srcLen, i32 *outSize)
 {
     i32 i;
     i32 bytesToCopyToDict;
@@ -74,15 +71,16 @@ LPBYTE Lzss::Compress(LPBYTE src, i32 srcLen, i32 *outSize)
     u8 inBitMask = 0x80;
     u32 curByte = 0;
     u32 checksum = 0;
+    (void)checksum;
 
-    LPBYTE dst = (LPBYTE)GlobalAlloc(GMEM_FIXED, srcLen * 2);
+    u8 *dst = (u8 *)malloc(srcLen * 2);
     if (dst == NULL)
     {
         return NULL;
     }
 
-    LPBYTE srcCursor = src;
-    LPBYTE dstCursor = dst;
+    u8 *srcCursor = src;
+    u8 *dstCursor = dst;
     *outSize = 0;
 
     InitializeDictionary();
@@ -173,56 +171,54 @@ LPBYTE Lzss::Compress(LPBYTE src, i32 srcLen, i32 *outSize)
     return dst;
 }
 
-#define DEC_NEXT_BIT()    \
-    inBitMask >>= 1;      \
-    if (inBitMask == 0)   \
-    {                     \
-        inBitMask = 0x80; \
+#define DEC_NEXT_BIT()                                                                             \
+    inBitMask >>= 1;                                                                               \
+    if (inBitMask == 0)                                                                            \
+    {                                                                                              \
+        inBitMask = 0x80;                                                                          \
     }
 
-#define DEC_WRITE_BYTE(data)           \
-    *dstCursor++ = data;               \
-    g_LzssDictionary[dictHead] = data; \
+#define DEC_WRITE_BYTE(data)                                                                       \
+    *dstCursor++ = data;                                                                           \
+    g_LzssDictionary[dictHead] = data;                                                             \
     dictHead = LZSS_DICTPOS_MOD(dictHead, 1);
 
-#define DEC_HANDLE_FETCH_NEW_BYTE()  \
-    if (inBitMask == 0x80)           \
-    {                                \
-        curByte = *srcCursor;        \
-        if (srcCursor - src >= size) \
-        {                            \
-            curByte = 0;             \
-        }                            \
-        else                         \
-        {                            \
-            srcCursor++;             \
-        }                            \
-        checksum += curByte;         \
+#define DEC_HANDLE_FETCH_NEW_BYTE()                                                                \
+    if (inBitMask == 0x80)                                                                         \
+    {                                                                                              \
+        if (srcCursor - src >= size)                                                               \
+        {                                                                                          \
+            curByte = 0;                                                                           \
+        }                                                                                          \
+        else                                                                                       \
+        {                                                                                          \
+            curByte = *srcCursor;                                                                  \
+            srcCursor++;                                                                           \
+        }                                                                                          \
+        checksum += curByte;                                                                       \
     }
 
-#define DEC_READ_FLAG_BIT()       \
-    DEC_HANDLE_FETCH_NEW_BYTE();  \
-    inBits = curByte & inBitMask; \
+#define DEC_READ_FLAG_BIT()                                                                        \
+    DEC_HANDLE_FETCH_NEW_BYTE();                                                                   \
+    inBits = curByte & inBitMask;                                                                  \
     DEC_NEXT_BIT();
 
-#define DEC_READ_BITS(bitsCount)          \
-    outBitMask = 0x01 << (bitsCount - 1); \
-    inBits = 0;                           \
-    while (outBitMask != 0)               \
-    {                                     \
-        DEC_HANDLE_FETCH_NEW_BYTE();      \
-        if ((curByte & inBitMask) != 0)   \
-        {                                 \
-            inBits |= outBitMask;         \
-        }                                 \
-                                          \
-        outBitMask >>= 1;                 \
-        DEC_NEXT_BIT();                   \
+#define DEC_READ_BITS(bitsCount)                                                                   \
+    outBitMask = 0x01 << (bitsCount - 1);                                                          \
+    inBits = 0;                                                                                    \
+    while (outBitMask != 0)                                                                        \
+    {                                                                                              \
+        DEC_HANDLE_FETCH_NEW_BYTE();                                                               \
+        if ((curByte & inBitMask) != 0)                                                            \
+        {                                                                                          \
+            inBits |= outBitMask;                                                                  \
+        }                                                                                          \
+                                                                                                   \
+        outBitMask >>= 1;                                                                          \
+        DEC_NEXT_BIT();                                                                            \
     }
 
-#pragma var_order(curByte, dstCursor, matchOffset, i, inBitMask, srcCursor, inBits, size, matchLength, checksum, \
-                  dictValue, outBitMask, dictHead)
-LPBYTE Lzss::Decompress(u8 *src, i32 srcLen, u8 *dst, u32 decompressedSize)
+u8 *Lzss::Decompress(u8 *src, i32 srcLen, u8 *dst, u32 decompressedSize)
 {
     i32 i;
     u32 matchOffset;
@@ -234,19 +230,20 @@ LPBYTE Lzss::Decompress(u8 *src, i32 srcLen, u8 *dst, u32 decompressedSize)
     u8 inBitMask = 0x80;
     u32 curByte = 0;
     u32 checksum = 0;
+    (void)checksum;
     i32 size = srcLen;
 
     if (dst == NULL)
     {
-        dst = (u8 *)GlobalAlloc(GMEM_FIXED, decompressedSize);
+        dst = (u8 *)malloc(decompressedSize);
         if (dst == NULL)
         {
             return NULL;
         }
     }
 
-    LPBYTE srcCursor = src;
-    LPBYTE dstCursor = dst;
+    u8 *srcCursor = src;
+    u8 *dstCursor = dst;
     u32 dictHead = 1;
 
     for (;;)
@@ -291,7 +288,6 @@ LPBYTE Lzss::Decompress(u8 *src, i32 srcLen, u8 *dst, u32 decompressedSize)
     return dst;
 }
 
-// FUNCTION: TH07 0x0045f270
 void Lzss::InitTree(i32 root)
 {
     g_LzssTree[LZSS_DICTSIZE].rightChild = root;
@@ -300,7 +296,6 @@ void Lzss::InitTree(i32 root)
     g_LzssTree[root].leftChild = 0;
 }
 
-// FUNCTION: TH07 0x0045f2c0
 void Lzss::InitializeDictionary()
 {
     i32 i;
@@ -317,8 +312,6 @@ void Lzss::InitializeDictionary()
     }
 }
 
-#pragma var_order(i, child, testNode, matchLength, delta)
-// FUNCTION: TH07 0x0045f340
 i32 Lzss::AddString(i32 node, i32 *matchPosition)
 {
     i32 delta;
@@ -336,8 +329,8 @@ i32 Lzss::AddString(i32 node, i32 *matchPosition)
     {
         for (i = 0; i < 0x12; i++)
         {
-            delta = (u32)g_LzssDictionary[node + i & 0x1fff] -
-                    (u32)g_LzssDictionary[testNode + i & 0x1fff];
+            delta = (u32)g_LzssDictionary[(node + i) & 0x1fff] -
+                    (u32)g_LzssDictionary[(testNode + i) & 0x1fff];
             if (delta != 0)
             {
                 break;
@@ -373,7 +366,6 @@ i32 Lzss::AddString(i32 node, i32 *matchPosition)
     }
 }
 
-// FUNCTION: TH07 0x0045f460
 void Lzss::DeleteString(i32 node)
 {
     if (g_LzssTree[node].parent == 0)
@@ -391,13 +383,12 @@ void Lzss::DeleteString(i32 node)
     }
     else
     {
-        i32 nextNode = FindNextNode(node);
-        DeleteString(nextNode);
-        ReplaceNode(node, nextNode);
+        i32 iVar1 = FindNextNode(node);
+        DeleteString(iVar1);
+        ReplaceNode(node, iVar1);
     }
 }
 
-// FUNCTION: TH07 0x0045f4f0
 void Lzss::ContractNode(i32 firstNode, i32 secondNode)
 {
     g_LzssTree[secondNode].parent = g_LzssTree[firstNode].parent;
@@ -412,7 +403,6 @@ void Lzss::ContractNode(i32 firstNode, i32 secondNode)
     g_LzssTree[firstNode].parent = 0;
 }
 
-// FUNCTION: TH07 0x0045f580
 void Lzss::ReplaceNode(i32 oldNode, i32 newNode)
 {
     i32 parent = g_LzssTree[oldNode].parent;
@@ -432,7 +422,6 @@ void Lzss::ReplaceNode(i32 oldNode, i32 newNode)
     g_LzssTree[oldNode].parent = 0;
 }
 
-// FUNCTION: TH07 0x0045f640
 i32 Lzss::FindNextNode(i32 startNode)
 {
     i32 node = g_LzssTree[startNode].leftChild;

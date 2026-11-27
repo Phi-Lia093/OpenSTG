@@ -1,17 +1,19 @@
 #pragma once
 
-#include <SDL3/SDL.h>
-#include <basetsd.h>
-
-// Direct3D is gone: the renderer is SDL3 + OpenGL and there is no device object to
-// hold. RenderCompat supplies the D3D-shaped names the game still uses for maths and
-// colour packing.
-#include "Global.hpp"
 #include "MidiOutput.hpp"
-#include "RenderCompat.hpp"
-#include "Renderer.hpp"
 #include "ZunBool.hpp"
+#include "ZunMath.hpp"
+#include "graphics/ZunGraphics.hpp"
 #include "inttypes.hpp"
+#include <SDL3/SDL_gamepad.h>
+#include <chrono>
+
+extern u16 g_CurFrameRawInput;
+extern u16 g_CurFrameGameInput;
+extern u16 g_LastFrameRawInput;
+extern u16 g_LastFrameGameInput;
+extern u16 g_IsEighthFrameOfHeldInput;
+extern u16 g_NumOfFramesInputsWereHeld;
 
 enum MusicMode
 {
@@ -56,10 +58,25 @@ enum SupervisorState
     SUPERVISOR_STATE_NEXT_STAGE_USELESS,
 };
 
+struct ControllerMapping
+{
+    i16 shootButton;
+    i16 bombButton;
+    i16 focusButton;
+    i16 menuButton;
+    i16 upButton;
+    i16 downButton;
+    i16 leftButton;
+    i16 rightButton;
+    i16 skipButton;
+};
+static_assert(sizeof(ControllerMapping) == 0x12);
+extern ControllerMapping g_ControllerMapping;
+
 struct GameConfiguration
 {
     ControllerMapping controllerMapping;
-    // pad 2
+    u8 pad[2];
     i32 version;
     i16 padAxisX;
     i16 padAxisY;
@@ -97,12 +114,11 @@ struct GameConfiguration
         };
     };
 };
-C_ASSERT(sizeof(GameConfiguration) == 0x38);
+static_assert(sizeof(GameConfiguration) == 0x38);
 
-#pragma pack(4)
 struct Supervisor
 {
-    static void DebugPrint2(const char *fmt, ...);
+    static void DebugPrint(const char *fmt, ...);
 
     static ZunResult RegisterChain();
 
@@ -111,44 +127,26 @@ struct Supervisor
     static u32 OnUpdate(Supervisor *arg);
     static u32 OnDraw(Supervisor *arg);
 
-    ZunResult CheckIntegrity(const char *version, i32 exeSize, i32 exeChecksum);
     void CheckTiming();
     static i32 CheckVSync();
-    static void DrawFpsCounter(i32 showFps);
+    static void DrawFpsCounter(i32 param_1);
     i32 FadeOutMusic(f32 musicFadeFrames);
-    HRESULT DisableFog();
-    HRESULT EnableFog();
+    static void StopMidiTimer(MidiTimer *timer);
+    i32 DisableFog();
+    i32 EnableFog();
     i32 LoadAudio(i32 idx, const char *path);
     ZunResult LoadConfig(const char *configFilename);
     static ZunResult LoadGameData();
     ZunResult PlayAudio(const char *path);
     ZunResult PlayLoadedAudio(i32 idx);
-    ZunResult SetupDInput();
-    ZunBool TakeSnapshot(const char *filename);
+    ZunResult SetupInput();
+    i32 TakeSnapshot(const char *filename);
     ZunResult StopAudio();
     void TickTimer(i32 *frames, f32 *subFrames);
     void UpdateStartupTime();
     void UpdateTime();
 
     i32 IsSlowMode();
-
-    // SDL3 input. GetInputFrame is the replacement for Controller::GetInput(): it
-    // produces the frame's TouhouButton bitmask for g_CurFrameRawInput.
-    static u16 GetInputFrame();
-    static u16 GetGamepadInput(u16 buttons);
-    static u32 SetButtonFromGamepad(u16 *outButtons, i16 controllerButtonToTest,
-                                    u32 touhouButton, SDL_Gamepad *pad);
-    static void ProcessInputEvents();
-    static void RefreshGamepad();
-
-    void InitializeTimingVars()
-    {
-        this->timingErrorCount = 0;
-        this->maxTimingError = 0;
-        this->checkTiming = FALSE;
-        this->timingSpikeAccumulator = 0;
-        this->timingBadCount = 0;
-    }
 
     ZunBool IsSoftwareTexturing()
     {
@@ -165,22 +163,12 @@ struct Supervisor
         return this->vsyncDisabled;
     }
 
-    HINSTANCE hInstance;
-    // SDL3 gamepad handle replacing the DirectInput objects. NULL when no gamepad is
-    // attached, which is the normal case: the game is then keyboard only.
-    //
-    // DirectInput needed four members here -- the IDirectInput8A, the keyboard and
-    // controller devices, and a DIDEVCAPS, which is 0x30 bytes. SDL needs a single
-    // gamepad handle, so the pad below stands in for the rest of that DirectInput
-    // storage. Keeping the leading block the same width as the original keeps every
-    // field after it, and sizeof(Supervisor), where the original had them; the C_ASSERT
-    // below is what holds that in place.
+    ZunGraphics *gfxDevice;
     SDL_Gamepad *controller;
-    u8 inputPad_10[0x34];
-    HWND hwndGameWindow;
-    D3DXMATRIX viewMatrix;
-    D3DXMATRIX projectionMatrix;
-    D3DVIEWPORT8 viewport;
+    ZunMatrix viewMatrix;
+    ZunMatrix projectionMatrix;
+    ZunMatrix viewProjectionMatrix;
+    ZunViewport viewport;
     DummyMidiTimer *midiTimer;
     GameConfiguration cfg;
     i32 calcCount;
@@ -211,13 +199,13 @@ struct Supervisor
             u32 forceIntegerTimer : 1;
         };
     };
-    DWORD lastTotalPlayTimeUpdate;
-    DWORD currentTime;
-    LARGE_INTEGER perfFrequency;
-    LARGE_INTEGER prevPerfCounter;
-    LARGE_INTEGER curPerfCounter;
-    SYSTEMTIME prevTime;
-    SYSTEMTIME curTime;
+    u64 lastTotalPlayTimeUpdate;
+    u64 currentTime;
+    u64 perfFrequency;
+    u64 prevPerfCounter;
+    u64 curPerfCounter;
+    std::chrono::time_point<std::chrono::system_clock> prevTime;
+    std::chrono::time_point<std::chrono::system_clock> curTime;
     i32 timingErrorCount;
     i32 isFpsBad;
     i32 maxTimingError;
@@ -230,129 +218,10 @@ struct Supervisor
     i32 versionDataSize;
     char *versionData;
 };
-// The layout no longer matches the retail binary: the Direct3D and DirectInput handles
-// are gone. Nothing reads this struct from a file, so the exact size is not load-bearing.
+
 extern Supervisor g_Supervisor;
 
 #define NUKE_SUPERVISOR() memset(&g_Supervisor, -1, sizeof(g_Supervisor))
-
-struct ZunTimer
-{
-    i32 previous;
-    f32 subFrame;
-    i32 current;
-
-    ZunTimer()
-    {
-        this->Initialize();
-    }
-
-    void Initialize()
-    {
-        this->current = 0;
-        this->previous = -999;
-        this->subFrame = 0.0f;
-    }
-
-    void SetCurrent(i32 value)
-    {
-        this->current = value;
-        this->subFrame = 0.0f;
-        this->previous = -999;
-    }
-
-    i32 Tick()
-    {
-        this->previous = this->current;
-        g_Supervisor.TickTimer(&this->current, &this->subFrame);
-        return this->current;
-    }
-
-    i32 GetCurrent()
-    {
-        return this->current;
-    }
-
-    f32 AsFloat()
-    {
-        return (f32)this->current + this->subFrame;
-    }
-
-    void operator=(i32 current)
-    {
-        this->current = current;
-        this->subFrame = 0.0f;
-        this->previous = -999;
-    }
-
-    void operator++(int)
-    {
-        this->Tick();
-    }
-
-    void operator--(int)
-    {
-        this->Decrement(1);
-    }
-
-    void operator+=(i32 value)
-    {
-        this->Increment(value);
-    }
-
-    void operator-=(i32 value)
-    {
-        this->Decrement(value);
-    }
-
-    i32 operator==(i32 value)
-    {
-        return this->current == value;
-    }
-
-    i32 operator!=(i32 value)
-    {
-        return this->current != value;
-    }
-
-    i32 operator<(i32 value)
-    {
-        return this->current < value;
-    }
-
-    i32 operator<=(i32 value)
-    {
-        return this->current <= value;
-    }
-
-    i32 operator>(i32 value)
-    {
-        return this->current > value;
-    }
-
-    i32 operator>=(i32 value)
-    {
-        return this->current >= value;
-    }
-
-    i32 operator%(i32 value)
-    {
-        return this->current % value;
-    }
-
-    i32 HasTicked()
-    {
-        return this->current != this->previous;
-    }
-
-    i32 HasTickedAndIsEq(i32 value)
-    {
-        return this->current != this->previous && this->current == value;
-    }
-
-    void Decrement(i32 value);
-    void Increment(i32 value);
-};
 
 inline ZunBool IsInitialStageLoad()
 {

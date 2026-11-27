@@ -1,9 +1,11 @@
 #pragma once
 
-#include <windows.h>
+#include <cstddef>
+#include <cstdlib>
+#include <cstring>
 
-#include "AnmManager.hpp"
-#include "Global.hpp"
+#include "AnmVm.hpp"
+#include "Chain.hpp"
 #include "ReplayManager.hpp"
 #include "ZunResult.hpp"
 #include "inttypes.hpp"
@@ -236,12 +238,13 @@ struct Th7k
     u16 th7kLen2;
     u8 version;
     u8 isPlayerScore;
-    // pad 2
+    u8 pad[2];
 };
-C_ASSERT(sizeof(Th7k) == 0xc);
+static_assert(sizeof(Th7k) == 0xc);
 
-struct Catk : Th7k
+struct Catk
 {
+    Th7k base;
     u32 highScorePerShot[SHOT_COUNT + 1];
     u16 idx;
     u8 nameCsum;
@@ -249,10 +252,11 @@ struct Catk : Th7k
     u16 numAttemptsPerShot[SHOT_COUNT + 1];
     u16 numSuccessesPerShot[SHOT_COUNT + 1];
 };
-C_ASSERT(sizeof(Catk) == 0x78);
+static_assert(sizeof(Catk) == 0x78);
 
-struct Hscr : Th7k
+struct Hscr
 {
+    Th7k base;
     u32 score;
     f32 slowRatePercent;
     u8 character;
@@ -261,29 +265,31 @@ struct Hscr : Th7k
     char name[9];
     char date[6];
     i8 numRetries;
-    // pad 1
+    u8 pad;
 };
-C_ASSERT(sizeof(Hscr) == 0x28);
+static_assert(sizeof(Hscr) == 0x28);
 
-struct Clrd : Th7k
+struct Clrd
 {
+    Th7k base;
     u8 difficultyClearedWithRetries[DIFF_COUNT];
     u8 difficultyClearedWithoutRetries[DIFF_COUNT];
     u8 characterShotType;
-    // pad 3
+    u8 pad[3];
 };
-C_ASSERT(sizeof(Clrd) == 0x1c);
+static_assert(sizeof(Clrd) == 0x1c);
 
-struct Pscr : Th7k
+struct Pscr
 {
+    Th7k base;
     i32 playCount;
     i32 score;
     u8 character;
     u8 difficulty;
     u8 stage;
-    // pad 1
+    u8 pad;
 };
-C_ASSERT(sizeof(Pscr) == 0x18);
+static_assert(sizeof(Pscr) == 0x18);
 
 struct PlstPlayCounts
 {
@@ -294,9 +300,11 @@ struct PlstPlayCounts
     u32 continueCount;
     u32 practiceCount;
 };
+static_assert(sizeof(PlstPlayCounts) == 0x2c);
 
-struct Plst : Th7k
+struct Plst
 {
+    Th7k base;
     u32 totalHours;
     u32 totalMinutes;
     u32 totalSeconds;
@@ -307,25 +315,42 @@ struct Plst : Th7k
     u32 gameMilliseconds;
     PlstPlayCounts playDataByDifficulty[DIFF_COUNT + 1]; // 7 is Total
 };
+static_assert(sizeof(Plst) == 0x160);
 
-struct Lsnm : Th7k
+struct Lsnm
 {
+    Th7k base;
     char name[12];
 };
-C_ASSERT(sizeof(Lsnm) == 0x18);
+static_assert(sizeof(Lsnm) == 0x18);
 
-struct Vrsm : Th7k
+struct Vrsm
 {
+    Th7k base;
     char versionStr[6];
     i32 exeSize;
     i32 exeChecksum;
 };
-C_ASSERT(sizeof(Vrsm) == 0x1c);
+static_assert(sizeof(Vrsm) == 0x1c);
 
-// Score nodes own no resources. ResultScreen explicitly initializes its grid.
+struct ScoreDatRaw
+{
+    u8 xorseed[2];
+    u16 csum;
+    u16 magic;
+    u8 unused_6;
+    u8 pad1;
+    i32 dataOffset;
+    u32 reservedPtr;
+    i32 fileLength;
+    u32 dstLen;
+    i32 srcLen;
+};
+static_assert(sizeof(ScoreDatRaw) == 0x1c);
+
 struct ScoreListNode
 {
-    void Initialize()
+    ScoreListNode()
     {
         prev = NULL;
         next = NULL;
@@ -336,55 +361,27 @@ struct ScoreListNode
     ScoreListNode *next;
     Hscr *data;
 };
-C_ASSERT(sizeof(ScoreListNode) == 0xc);
-
-// Walk the contiguous score grid with its element size and count. Only the
-// optimization hint varies by TU; this body and every object layout are shared.
-#if defined(TH07_SCORE_NODE_INIT_NOINLINE)
-__declspec(noinline)
-#endif
-inline void __stdcall InitializeScoreListNodes(void *storage, u32 stride, i32 count)
-{
-    while (--count >= 0)
-    {
-        static_cast<ScoreListNode *>(storage)->Initialize();
-        storage = static_cast<char *>(storage) + stride;
-    }
-}
 
 struct ScoreDat
 {
-    u8 xorseed[2];
-    u16 csum;
-    u16 magic;
-    u8 unused_6;
-    // pad 1
-    i32 dataOffset;
+    ScoreDatRaw raw;
     ScoreListNode *scores;
-    i32 fileLength;
-    SIZE_T dstLen;
-    i32 srcLen;
+    u8 *decodedData;
 };
-C_ASSERT(sizeof(ScoreDat) == 0x1c);
 
 #define MAX_SPELLCARD_LIST_ENTRIES 14
 
 struct ResultScreen
 {
-#if defined(TH07_RESULT_CTOR_EXPORT)
-    __declspec(dllexport)
-#endif
     ResultScreen()
     {
-        InitializeScoreListNodes(&this->scoreLists, sizeof(ScoreListNode),
-                                 sizeof(this->scoreLists) / sizeof(ScoreListNode));
-        memset(this, 0, sizeof(ResultScreen));
+        memset((void *)this, 0, sizeof(ResultScreen));
         this->cursor = 1;
     }
 
     ~ResultScreen()
     {
-        ZUN_FREE(this->scoreDat);
+        free(this->scoreDat);
     }
 
     static ZunResult RegisterChain(u32 type);
@@ -407,8 +404,8 @@ struct ResultScreen
     static ScoreDat *OpenScore(const char *path);
     static i32 LinkScore(ScoreListNode *prevNode, Hscr *hscr);
     i32 LinkScoreEx(Hscr *out, i32 difficulty, i32 character);
-    static u32 GetHighScore(ScoreDat *scoreDat, ScoreListNode *node,
-                            u32 character, u32 difficulty, u8 *numRetries);
+    static u32 GetHighScore(ScoreDat *scoreDat, ScoreListNode *node, u32 character, u32 difficulty,
+                            u8 *numRetries);
     static ZunResult ParseCatk(ScoreDat *scoreDat, Catk *outCatk);
     static ZunResult ParseClrd(ScoreDat *scoreDat, Clrd *outClrd);
     static ZunResult ParsePlst(ScoreDat *scoreDat, Plst *outPlst);
@@ -419,6 +416,19 @@ struct ResultScreen
     static void FreeAllScores(ScoreListNode *scores);
     static ZunBool ParseLsnm(ScoreDat *scoreDat, Lsnm *outLsnm);
     void WriteScore();
+
+    void UpdatePrev()
+    {
+        for (i32 i = 0; i < 41; i++)
+        {
+            this->vms[i].UpdatePrev();
+        }
+        for (i32 i = 0; i < 15; i++)
+        {
+            this->spellcardListVms[i].UpdatePrev();
+        }
+        this->spellcardBarVm.UpdatePrev();
+    }
 
     ScoreDat *scoreDat;
     i32 frameTimer;
@@ -441,7 +451,7 @@ struct ResultScreen
     i32 unused_4c;
     i32 spellsCapturedPerShot[SHOT_COUNT + 1];
     u8 lastTotalSeconds;
-    // pad 3
+    u8 pad[3];
     AnmVm vms[41];
     AnmVm spellcardListVms[MAX_SPELLCARD_LIST_ENTRIES + 1];
     AnmVm unused_8110;
@@ -456,4 +466,3 @@ struct ResultScreen
     ReplayFile replays[15];
     ReplayFile defaultReplay;
 };
-C_ASSERT(sizeof(ResultScreen) == 0xce6c);

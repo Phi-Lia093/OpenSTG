@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AnmVm.hpp"
 #include "Player.hpp"
 
 extern u8 g_ItemDropTable[32];
@@ -30,6 +31,8 @@ enum ItemState
 
 struct Item
 {
+    Item();
+
     ZunBool IsBelowPoc()
     {
         return this->pos.y < g_Player.shooterData->pocY;
@@ -42,14 +45,14 @@ struct Item
 
     ZunBool ShouldAwardMaxScore()
     {
-        return this->pos.y < g_Player.shooterData->pocY ||
-               this->autoCollect;
+        return this->pos.y < g_Player.shooterData->pocY || this->autoCollect;
     }
 
     AnmVm sprite;
-    Float3 pos;
-    Float3 velocity;
-    Float3 targetPos;
+    ZunVec3 pos;
+    ZunVec3 prevPos;
+    ZunVec3 velocity;
+    ZunVec3 targetPos;
     ZunTimer timer;
     i8 itemType;
     i8 isInUse;
@@ -59,18 +62,19 @@ struct Item
     // pad 3
     struct Item *next;
 };
-C_ASSERT(sizeof(Item) == 0x288);
 
 #define MAX_ITEMS 1100
 
 struct ItemManager
 {
+    ItemManager();
+
     void ActivateAllItems();
     void DespawnAllItems(i32 skipItemIdx);
     void OnUpdate();
     void OnDraw();
     void RemoveAllItems();
-    Item *SpawnItem(Float3 *heading, i32 itemType, i32 state);
+    Item *SpawnItem(ZunVec3 *heading, i32 itemType, i32 state);
 
     Item items[MAX_ITEMS + 1];
     i32 nextIndex;

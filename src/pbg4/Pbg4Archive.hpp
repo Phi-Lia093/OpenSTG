@@ -1,22 +1,22 @@
 #pragma once
 
+#include <cstdlib>
+
 #include "Pbg4File.hpp"
 #include "inttypes.hpp"
 
 struct Pbg4Entry
 {
-    // FUNCTION: TH07 0x0045c6f0 FOLDED
     Pbg4Entry()
     {
         filename = NULL;
     }
 
-    // FUNCTION: TH07 0x0045f680
     ~Pbg4Entry()
     {
         if (filename)
         {
-            GlobalFree(filename);
+            free(filename);
             filename = NULL;
         }
     }
@@ -43,7 +43,7 @@ struct Pbg4Archive
     u8 *ReadDecompressEntry(const char *filename, u8 *buf);
     void Release();
 
-    DWORD ReadFile(void *data, u32 len)
+    u32 ReadFile(void *data, u32 len)
     {
         Pbg4File *file = this->fileAbstraction;
         return file->Read(data, len);
@@ -54,3 +54,4 @@ struct Pbg4Archive
     char *filename;
     Pbg4File *fileAbstraction;
 };
+extern Pbg4Archive g_Pbg4Archive;

@@ -1,36 +1,54 @@
 #include "ItemManager.hpp"
 
+#include "AnmIdx.hpp"
 #include "AnmManager.hpp"
 #include "AsciiManager.hpp"
 #include "BulletManager.hpp"
 #include "EffectManager.hpp"
 #include "EnemyManager.hpp"
 #include "GameManager.hpp"
-#include "Global.hpp"
+#include "GameWindow.hpp"
 #include "Gui.hpp"
 #include "Player.hpp"
+#include "Rng.hpp"
 #include "SoundPlayer.hpp"
-#include "utils.hpp"
 
-// GLOBAL: TH07 0x0049ecf8
-i32 g_FullPowerScoreBonus[31] = {10, 20, 30, 40, 50, 60, 70, 80,
-                                 90, 100, 200, 300, 400, 500, 600, 700,
-                                 800, 900, 1000, 2000, 3000, 4000, 5000,
-                                 6000, 7000, 8000, 9000, 10000, 11000, 12000, 51200};
+i32 g_FullPowerScoreBonus[31] = {
+    10,  20,  30,   40,   50,   60,   70,   80,   90,   100,  200,  300,   400,   500,   600,  700,
+    800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 51200};
 
-// GLOBAL: TH07 0x0049ed74
 i32 g_PowerLevels[9] = {8, 16, 32, 48, 64, 80, 96, 128, 999};
 
-// GLOBAL: TH07 0x0049efa0
-u8 g_ItemDropTable[32] = {0, 0, 1, 0, 1, 0, 0, 7, 1, 1, 0, 0, 7, 1, 1, 0, 1, 0,
-                          1, 0, 1, 0, 1, 0, 1, 0, 7, 1, 1, 1, 0, 2};
+u8 g_ItemDropTable[32] = {0, 0, 1, 0, 1, 0, 0, 7, 1, 1, 0, 0, 7, 1, 1, 0,
+                          1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 7, 1, 1, 1, 0, 2};
 
-// GLOBAL: TH07 0x00575c70
 ItemManager g_ItemManager;
 
-#pragma var_order(i, item)
-// FUNCTION: TH07 0x004326f0
-Item *ItemManager::SpawnItem(Float3 *heading, i32 itemType, i32 state)
+void AngleToVector(ZunVec3 *vec, f32 angle, f32 speed)
+{
+    vec->x = cosf(angle) * speed;
+    vec->y = sinf(angle) * speed;
+}
+
+void GameManager::AddCurrentPower(i32 amount)
+{
+    if (CheckGameIntegrity())
+    {
+        NUKE_SUPERVISOR();
+    }
+    this->globals->currentPower += (f32)amount;
+    RegenerateGameIntegrityCsum();
+}
+
+ItemManager::ItemManager()
+{
+}
+
+Item::Item()
+{
+}
+
+Item *ItemManager::SpawnItem(ZunVec3 *heading, i32 itemType, i32 state)
 {
     Item *item;
     i32 i;
@@ -65,7 +83,7 @@ Item *ItemManager::SpawnItem(Float3 *heading, i32 itemType, i32 state)
             this->nextIndex = 0;
         }
         item->isInUse = 1;
-        item->pos = *heading;
+        item->prevPos = item->pos = *heading;
         item->velocity.x = 0.0f;
         item->velocity.y = -2.2f;
         item->velocity.z = 0.0f;
@@ -87,9 +105,10 @@ Item *ItemManager::SpawnItem(Float3 *heading, i32 itemType, i32 state)
         {
             item->state = ITEM_STATE_DEFAULT;
         }
-        g_AnmManager->SetAnmIdxAndExecuteScript(
-            &item->sprite, itemType + ANM_SCRIPT_BULLETS_ITEM_SPAWN_ARRAY);
+        g_AnmManager->SetAnmIdxAndExecuteScript(&item->sprite,
+                                                itemType + ANM_SCRIPT_BULLETS_ITEM_SPAWN_ARRAY);
         item->sprite.color.color = 0xffffffff;
+        item->sprite.UpdatePrev();
         item->sprite.zWriteDisable = 1;
         item->autoCollect = 0;
         item->isOnscreen = 1;
@@ -99,9 +118,6 @@ Item *ItemManager::SpawnItem(Float3 *heading, i32 itemType, i32 state)
     return i < MAX_ITEMS ? item : &this->items[MAX_ITEMS];
 }
 
-#pragma var_order(i, itemTimerSecs, itemScore, playerAngle, grabItemSize, itemAcquired, \
-                  item, j, prevPowerIdx, k, prevPowerLevel2)
-// FUNCTION: TH07 0x00432990
 void ItemManager::OnUpdate()
 {
     i32 prevPowerLevel2;
@@ -116,8 +132,8 @@ void ItemManager::OnUpdate()
     i32 i;
 
     item = this->items;
-    Float3 grabItemSize(g_Player.shooterData->itemCollectRadius,
-                    g_Player.shooterData->itemCollectRadius, 16.0f);
+    ZunVec3 grabItemSize(g_Player.shooterData->itemCollectRadius,
+                         g_Player.shooterData->itemCollectRadius, 16.0f);
     itemAcquired = FALSE;
     this->activeItemCount = 0;
     this->listTail = &this->listHead;
@@ -130,31 +146,37 @@ void ItemManager::OnUpdate()
             continue;
         }
 
+        item->sprite.UpdatePrev();
+        item->prevPos = item->pos;
+
         this->activeItemCount++;
         if (item->state == ITEM_STATE_MOVE_RANDOM)
         {
             if (item->timer < 60)
             {
                 itemTimerSecs = item->timer.AsFloat() / 60.0f;
-                item->pos = item->targetPos * itemTimerSecs +
-                            item->velocity *
-                                (1.0f - itemTimerSecs);
+                item->pos =
+                    itemTimerSecs * item->targetPos + item->velocity * (1.0f - itemTimerSecs);
                 goto check_collision;
             }
             else if (item->timer == 60)
             {
-                item->velocity = Float3(0.0f, 0.0f, 0.0f);
+                item->velocity = ZunVec3(0.0f, 0.0f, 0.0f);
                 item->state = ITEM_STATE_DEFAULT;
             }
         }
         else
         {
-            if (item->state == ITEM_STATE_AUTOCOLLECT || ((128.0 <= (f64)g_GameManager.GetPower() || g_GameManager.difficulty >= 4) && g_Player.pos.y < g_Player.shooterData->pocY) || g_Player.borderState == 1)
+            if (item->state == ITEM_STATE_AUTOCOLLECT ||
+                ((128.0 <= (f64)g_GameManager.GetPower() || g_GameManager.difficulty >= 4) &&
+                 g_Player.pos.y < g_Player.shooterData->pocY) ||
+                g_Player.borderState == BORDER_ACTIVE)
             {
                 if (g_Player.playerState != PLAYER_STATE_SPAWNING)
                 {
                     playerAngle = g_Player.AngleToPlayer(&item->pos);
-                    item->velocity.FromAngleMagnitude(playerAngle, g_Player.shooterData->itemCollectSpeed);
+                    item->velocity.FromAngleMagnitude(playerAngle,
+                                                      g_Player.shooterData->itemCollectSpeed);
                     item->state = ITEM_STATE_AUTOCOLLECT;
                     if (g_Player.borderState == BORDER_ACTIVE)
                     {
@@ -204,11 +226,13 @@ void ItemManager::OnUpdate()
                     g_GameManager.powerItemCountForScore++;
                     if (g_GameManager.powerItemCountForScore >= ARRAY_SIZE(g_FullPowerScoreBonus))
                     {
-                        g_GameManager.powerItemCountForScore = ARRAY_SIZE(g_FullPowerScoreBonus) - 1;
+                        g_GameManager.powerItemCountForScore =
+                            ARRAY_SIZE(g_FullPowerScoreBonus) - 1;
                     }
                     itemScore = g_FullPowerScoreBonus[g_GameManager.powerItemCountForScore];
                     g_GameManager.AddScore(itemScore);
-                    g_AsciiManager.CreatePopup1(&item->pos, itemScore, itemScore >= 12800 ? 0xffffff00 : 0xffffffff);
+                    g_AsciiManager.CreatePopup1(&item->pos, itemScore,
+                                                itemScore >= 12800 ? 0xffffff00 : 0xffffffff);
                 }
                 else
                 {
@@ -222,7 +246,8 @@ void ItemManager::OnUpdate()
                     g_GameManager.AddCurrentPower(1);
                     if (g_GameManager.GetPower() >= 128)
                     {
-                        g_GameManager.SetPower(128.0f);
+                        g_GameManager.globals->currentPower = 128.0f;
+                        g_GameManager.RegenerateGameIntegrityCsum();
                         if (!g_EnemyManager.spellcardInfo.isActive)
                         {
                             g_BulletManager.RemoveAllBullets(ITEM_STATE_AUTOCOLLECT);
@@ -249,9 +274,7 @@ void ItemManager::OnUpdate()
                 g_GameManager.IncreaseSubrank(1);
                 break;
             case ITEM_POINT:
-                itemScore =
-                    item->IsBelowPoc() ? 50000
-                                       : 50000 - item->OffsetFromPoc() * 100;
+                itemScore = item->IsBelowPoc() ? 50000 : 50000 - item->OffsetFromPoc() * 100;
                 if (item->autoCollect == 1)
                 {
                     itemScore = 50000;
@@ -265,10 +288,15 @@ void ItemManager::OnUpdate()
                 }
                 else if (g_GameManager.cherry - g_GameManager.globals->cherryStart > 50000)
                 {
-                    itemScore += (g_GameManager.cherry - g_GameManager.globals->cherryStart - 50000) / 5;
+                    itemScore +=
+                        (g_GameManager.cherry - g_GameManager.globals->cherryStart - 50000) / 5;
                 }
                 itemScore -= itemScore % 10;
-                g_AsciiManager.CreatePopup1(&item->pos, itemScore, item->pos.y < g_Player.shooterData->pocY || item->autoCollect == 1 ? 0xffffff00 : 0xffffffff);
+                g_AsciiManager.CreatePopup1(&item->pos, itemScore,
+                                            item->pos.y < g_Player.shooterData->pocY ||
+                                                    item->autoCollect == 1
+                                                ? 0xffffff00
+                                                : 0xffffffff);
                 g_GameManager.AddScore(itemScore);
                 g_GameManager.globals->pointItemsCollectedThisStage++;
                 g_GameManager.globals->pointItemsCollectedForExtend++;
@@ -285,19 +313,22 @@ void ItemManager::OnUpdate()
                 {
                     for (;;)
                     {
-                        if (g_GameManager.difficulty < DIFF_EXTRA)
+                        if (g_GameManager.difficulty < 4)
                         {
                             if (g_GameManager.globals->extendsFromPointItems < 3)
                             {
-                                g_GameManager.globals->nextNeededPointItemsForExtend = g_GameManager.globals->extendsFromPointItems * 75 + 50;
+                                g_GameManager.globals->nextNeededPointItemsForExtend =
+                                    g_GameManager.globals->extendsFromPointItems * 75 + 50;
                             }
                             else if (g_GameManager.globals->extendsFromPointItems < 5)
                             {
-                                g_GameManager.globals->nextNeededPointItemsForExtend = (g_GameManager.globals->extendsFromPointItems - 3) * 150 + 300;
+                                g_GameManager.globals->nextNeededPointItemsForExtend =
+                                    (g_GameManager.globals->extendsFromPointItems - 3) * 150 + 300;
                             }
                             else
                             {
-                                g_GameManager.globals->nextNeededPointItemsForExtend = (g_GameManager.globals->extendsFromPointItems - 5) * 200 + 800;
+                                g_GameManager.globals->nextNeededPointItemsForExtend =
+                                    (g_GameManager.globals->extendsFromPointItems - 5) * 200 + 800;
                             }
                         }
                         else if (g_GameManager.globals->extendsFromPointItems == 0)
@@ -310,10 +341,12 @@ void ItemManager::OnUpdate()
                         }
                         else
                         {
-                            g_GameManager.globals->nextNeededPointItemsForExtend = (g_GameManager.globals->extendsFromPointItems - 2) * 500 + 800;
+                            g_GameManager.globals->nextNeededPointItemsForExtend =
+                                (g_GameManager.globals->extendsFromPointItems - 2) * 500 + 800;
                         }
 
-                        if (g_GameManager.globals->pointItemsCollectedForExtend >= g_GameManager.globals->nextNeededPointItemsForExtend)
+                        if (g_GameManager.globals->pointItemsCollectedForExtend >=
+                            g_GameManager.globals->nextNeededPointItemsForExtend)
                         {
                             g_GameManager.ExtendFromPoints();
                             g_GameManager.globals->extendsFromPointItems++;
@@ -326,7 +359,8 @@ void ItemManager::OnUpdate()
             case ITEM_POWER_BIG:
                 if (g_GameManager.GetPower() >= 128)
                 {
-                    g_AsciiManager.CreatePopup1(&item->pos, itemScore, itemScore >= 1000 ? 0xffffff00 : 0xffffffff);
+                    g_AsciiManager.CreatePopup1(&item->pos, itemScore,
+                                                itemScore >= 1000 ? 0xffffff00 : 0xffffffff);
                 }
                 else
                 {
@@ -339,7 +373,8 @@ void ItemManager::OnUpdate()
                     g_GameManager.AddCurrentPower(8);
                     if (g_GameManager.GetPower() >= 128)
                     {
-                        g_GameManager.SetPower(128.0f);
+                        g_GameManager.globals->currentPower = 128.0f;
+                        g_GameManager.RegenerateGameIntegrityCsum();
                         if (!g_EnemyManager.spellcardInfo.isActive)
                         {
                             g_BulletManager.RemoveAllBullets(ITEM_STATE_AUTOCOLLECT);
@@ -384,7 +419,8 @@ void ItemManager::OnUpdate()
                     g_AsciiManager.CreatePopup1(&item->pos, -1, 0xffffc0a0);
                     this->DespawnAllItems(i);
                 }
-                g_GameManager.SetPower(128.0f);
+                g_GameManager.globals->currentPower = 128.0f;
+                g_GameManager.RegenerateGameIntegrityCsum();
                 g_GameManager.AddScore(1000);
                 g_AsciiManager.CreatePopup1(&item->pos, 1000, 0xffffffff);
                 g_Gui.powerDisplayUpdateFrames = 2;
@@ -424,11 +460,13 @@ void ItemManager::OnUpdate()
             case ITEM_CHERRY:
                 if (g_GameManager.IsCherryAtMax())
                 {
-                    itemScore = item->ShouldAwardMaxScore()
-                                    ? 50000
-                                    : 50000 - item->OffsetFromPoc() * 100;
+                    itemScore =
+                        item->ShouldAwardMaxScore() ? 50000 : 50000 - item->OffsetFromPoc() * 100;
                     itemScore -= itemScore % 10;
-                    g_AsciiManager.CreatePopup1(&item->pos, itemScore, item->pos.y < g_Player.shooterData->pocY || item->autoCollect ? 0xffffff00 : 0xffffffff);
+                    g_AsciiManager.CreatePopup1(
+                        &item->pos, itemScore,
+                        item->pos.y < g_Player.shooterData->pocY || item->autoCollect ? 0xffffff00
+                                                                                      : 0xffffffff);
                     g_GameManager.AddScore(itemScore);
                 }
                 itemScore = 1000;
@@ -480,8 +518,6 @@ void ItemManager::OnUpdate()
     }
 }
 
-#pragma var_order(i, item)
-// FUNCTION: TH07 0x00433a90
 void ItemManager::RemoveAllItems()
 {
     Item *item;
@@ -496,13 +532,11 @@ void ItemManager::RemoveAllItems()
         }
 
         item->state = ITEM_STATE_AUTOCOLLECT;
-        item->velocity = Float3(0.0f, -0.5f, 0.0f);
+        item->velocity = ZunVec3(0.0f, -0.5f, 0.0f);
     }
 }
 
-#pragma var_order(i, item)
-// FUNCTION: TH07 0x00433b20
-void ItemManager::DespawnAllItems(i32 skipItemIdx)
+void ItemManager::DespawnAllItems(i32 param_1)
 {
     Item *item;
     i32 i;
@@ -510,7 +544,7 @@ void ItemManager::DespawnAllItems(i32 skipItemIdx)
     item = this->items;
     for (i = 0; i < MAX_ITEMS; i++, item++)
     {
-        if (item->isInUse == 0 || i == skipItemIdx)
+        if (item->isInUse == 0 || i == param_1)
         {
             continue;
         }
@@ -525,14 +559,11 @@ void ItemManager::DespawnAllItems(i32 skipItemIdx)
             }
             g_EffectManager.SpawnEffect(0, &item->pos, 1, 0xffffffff);
             item->itemType = 7;
-            g_AnmManager->SetAnmIdxAndExecuteScript(
-                &item->sprite, ANM_SCRIPT_BULLETS_ITEM_DESPAWN);
+            g_AnmManager->SetAnmIdxAndExecuteScript(&item->sprite, ANM_SCRIPT_BULLETS_ITEM_DESPAWN);
         }
     }
 }
 
-#pragma var_order(i, item)
-// FUNCTION: TH07 0x00433c40
 void ItemManager::ActivateAllItems()
 {
     Item *item;
@@ -556,8 +587,6 @@ void ItemManager::ActivateAllItems()
     }
 }
 
-#pragma var_order(itemAlpha, item)
-// FUNCTION: TH07 0x00433cd0
 void ItemManager::OnDraw()
 {
     Item *item;
@@ -566,19 +595,17 @@ void ItemManager::OnDraw()
     item = this->listHead.next;
     while (item)
     {
-        item->sprite.pos.x =
-            g_GameManager.arcadeRegionTopLeftPos.x + item->pos.x;
-        item->sprite.pos.y =
-            g_GameManager.arcadeRegionTopLeftPos.y + item->pos.y;
+        ZunVec3 drawPos = item->prevPos.Lerp(item->pos, g_RenderAlpha);
+        item->sprite.pos.x = g_GameManager.arcadeRegionTopLeftPos.x + drawPos.x;
+        item->sprite.pos.y = g_GameManager.arcadeRegionTopLeftPos.y + drawPos.y;
         item->sprite.pos.z = 0.01f;
         if (item->pos.y < -8.0f)
         {
             item->sprite.pos.y = 8.0f + g_GameManager.arcadeRegionTopLeftPos.y;
             if (item->isOnscreen)
             {
-                g_AnmManager->SetActiveSprite(
-                    &item->sprite,
-                    item->itemType + ANM_SPRITE_BULLETS_ITEMS_ARRAY);
+                g_AnmManager->SetActiveSprite(&item->sprite,
+                                              item->itemType + ANM_SPRITE_BULLETS_ITEMS_ARRAY);
                 item->isOnscreen = 0;
                 item->sprite.zWriteDisable = 1;
             }
@@ -587,16 +614,14 @@ void ItemManager::OnDraw()
             {
                 itemAlpha = 64;
             }
-            item->sprite.color.color =
-                (item->sprite.color.color & 0xffffff) | itemAlpha << 24;
+            item->sprite.color.color = (item->sprite.color.color & 0xffffff) | itemAlpha << 24;
         }
         else
         {
             if (!item->isOnscreen)
             {
                 g_AnmManager->SetActiveSprite(
-                    &item->sprite,
-                    item->itemType + ANM_SPRITE_BULLETS_ITEMS_OFFSCREEN_ARRAY);
+                    &item->sprite, item->itemType + ANM_SPRITE_BULLETS_ITEMS_OFFSCREEN_ARRAY);
                 item->isOnscreen = 1;
                 item->sprite.color.color = 0xffffffff;
                 item->sprite.zWriteDisable = 1;

@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string.h>
+#include <cstring>
 
-#include "AnmManager.hpp"
-#include "Global.hpp"
+#include "AnmVm.hpp"
+#include "Chain.hpp"
 #include "ZunBool.hpp"
 
 #define MAX_TRACK_DESCRIPTORS 32
@@ -19,7 +19,6 @@ struct TrackDescriptor
     char title[66];
     char description[8][66];
 };
-C_ASSERT(sizeof(TrackDescriptor) == 0x292);
 
 struct MusicRoom
 {
@@ -38,6 +37,19 @@ struct MusicRoom
     ZunResult CheckInputEnable();
     i32 ProcessInput();
 
+    void UpdatePrev()
+    {
+        this->vm[0].UpdatePrev();
+        for (i32 i = 0; i < 31; i++)
+        {
+            this->titleSprites[i].UpdatePrev();
+        }
+        for (i32 i = 0; i < 8; i++)
+        {
+            this->descriptionSprites[i].UpdatePrev();
+        }
+    }
+
     ChainElem *calcChain;
     ChainElem *drawChain;
     i32 waitFramesCounter;
@@ -51,4 +63,3 @@ struct MusicRoom
     AnmVm titleSprites[31];
     AnmVm descriptionSprites[8];
 };
-C_ASSERT(sizeof(MusicRoom) == 0x5c04);

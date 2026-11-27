@@ -7,40 +7,38 @@
 //-----------------------------------------------------------------------------
 #pragma once
 
-#include "Global.hpp"
-
 //-----------------------------------------------------------------------------
 // Miscellaneous helper functions
 //-----------------------------------------------------------------------------
-#define SAFE_DELETE(p)  \
-    {                   \
-        if (p)          \
-        {               \
-            delete (p); \
-            (p) = NULL; \
-        }               \
+#define SAFE_DELETE(p)                                                                             \
+    {                                                                                              \
+        if (p)                                                                                     \
+        {                                                                                          \
+            delete (p);                                                                            \
+            (p) = NULL;                                                                            \
+        }                                                                                          \
     }
-#define SAFE_DELETE_ARRAY(p) \
-    {                        \
-        if (p)               \
-        {                    \
-            delete[] (p);    \
-            (p) = NULL;      \
-        }                    \
+#define SAFE_DELETE_ARRAY(p)                                                                       \
+    {                                                                                              \
+        if (p)                                                                                     \
+        {                                                                                          \
+            delete[] (p);                                                                          \
+            (p) = NULL;                                                                            \
+        }                                                                                          \
     }
-#define SAFE_FREE(p)     \
-    {                    \
-        if (p)           \
-        {                \
-            ZUN_FREE(p); \
-            (p) = NULL;  \
-        }                \
+#define SAFE_FREE(p)                                                                               \
+    {                                                                                              \
+        if (p)                                                                                     \
+        {                                                                                          \
+            free(p);                                                                               \
+            (p) = NULL;                                                                            \
+        }                                                                                          \
     }
-#define SAFE_RELEASE(p)     \
-    {                       \
-        if (p)              \
-        {                   \
-            (p)->Release(); \
-            (p) = NULL;     \
-        }                   \
+#define SAFE_RELEASE(p)                                                                            \
+    {                                                                                              \
+        if (p)                                                                                     \
+        {                                                                                          \
+            (p)->Release();                                                                        \
+            (p) = NULL;                                                                            \
+        }                                                                                          \
     }

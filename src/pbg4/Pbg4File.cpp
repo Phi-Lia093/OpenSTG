@@ -1,230 +1,230 @@
 #include "Pbg4File.hpp"
 
+#include <SDL3/SDL.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 #include "inttypes.hpp"
 
-// this is like completely worthless
-// GLOBAL: TH07 0x00495120
-const u32 g_SeekModes[3] = {FILE_BEGIN, FILE_CURRENT, FILE_END};
+const SDL_IOWhence g_SeekModes[3] = {SDL_IO_SEEK_SET, SDL_IO_SEEK_CUR, SDL_IO_SEEK_END};
 
 // would it really not have been simpler to just type the letter where its used
 // GLOBAL: TH07 0x0049ea70
 const char *g_AccessModes[3] = {
-    // STRING: TH07 0x00495244
     "r",
-    // STRING: TH07 0x00495240
     "w",
-    // STRING: TH07 0x0049523c
     "a",
 };
 
-// FUNCTION: TH07 0x0045e550
 Pbg4File::Pbg4File()
 {
-    this->handle = INVALID_HANDLE_VALUE;
+    this->file = NULL;
     this->access = 0;
 }
 
-// FUNCTION: TH07 0x0045e5c0
 Pbg4File::~Pbg4File()
 {
     Close();
 }
 
-#pragma var_order(curModeChar, seekToEnd, pathBuf, actionOnExistingFile)
-// FUNCTION: TH07 0x0045e620
 bool Pbg4File::Open(const char *path, const char *mode)
 {
-    DWORD actionOnExistingFile;
-    char pathBuf[264];
-    i32 seekToEnd;
-    const char *curModeChar;
+    char local_114[1024];
+    i32 local_c;
+    const char *local_8;
 
-    seekToEnd = 0;
+    local_c = 0;
     this->Close();
-    for (curModeChar = mode; *curModeChar != '\0'; ++curModeChar)
+    for (local_8 = mode; *local_8 != '\0'; ++local_8)
     {
-        if (*curModeChar == 'r')
+        if (*local_8 == 'r')
         {
-            this->access = GENERIC_READ;
-            actionOnExistingFile = OPEN_EXISTING;
+            this->access = "rb";
             break;
         }
-        if (*curModeChar == 'w')
+        if (*local_8 == 'w')
         {
-            DeleteFileA(path);
-            this->access = GENERIC_WRITE;
-            actionOnExistingFile = CREATE_ALWAYS;
+            remove(path);
+            this->access = "wb";
             break;
         }
-        if (*curModeChar == 'a')
+        if (*local_8 == 'a')
         {
-            seekToEnd = 1;
-            this->access = GENERIC_WRITE;
-            actionOnExistingFile = OPEN_ALWAYS;
+            local_c = 1;
+            this->access = "ab";
             break;
         }
     }
-
-    if (*curModeChar == '\0')
+    if (*local_8 == '\0')
     {
         return false;
     }
-
-    GetFullPath(pathBuf, path);
-    this->handle = CreateFileA(pathBuf, this->access, FILE_SHARE_READ, NULL, actionOnExistingFile,
-                               FILE_FLAG_SEQUENTIAL_SCAN | FILE_ATTRIBUTE_NORMAL, NULL);
-    if (this->handle == INVALID_HANDLE_VALUE)
+    else
     {
-        return false;
-    }
+        GetFullPath(local_114, path);
+        this->file = SDL_IOFromFile(local_114, this->access);
+        if (!this->file)
+        {
+            return false;
+        }
 
-    if (seekToEnd)
-    {
-        SetFilePointer(this->handle, 0, NULL, FILE_END);
+        if (local_c != 0)
+        {
+            SDL_SeekIO(this->file, 0, SDL_IO_SEEK_END);
+        }
+        return true;
     }
-    return true;
 }
 
-// FUNCTION: TH07 0x0045e770
 void Pbg4File::Close()
 {
-    if (this->handle != INVALID_HANDLE_VALUE)
+    if (this->file)
     {
-        CloseHandle(this->handle);
-        this->handle = INVALID_HANDLE_VALUE;
+        SDL_CloseIO(this->file);
+        this->file = NULL;
         this->access = 0;
     }
 }
 
-// FUNCTION: TH07 0x0045e7b0
-DWORD Pbg4File::Read(void *data, u32 len)
+u32 Pbg4File::Read(void *data, u32 len)
 {
-    DWORD bytesRead;
+    u32 local_8;
 
-    bytesRead = 0;
-    if (this->access != GENERIC_READ)
+    local_8 = 0;
+    if (!this->access || strcmp(this->access, "rb") != 0)
     {
         return 0;
     }
 
-    ReadFile(this->handle, data, len, &bytesRead, NULL);
-    return bytesRead;
+    local_8 = SDL_ReadIO(this->file, data, len);
+    return local_8;
 }
 
-// FUNCTION: TH07 0x0045e800
 bool Pbg4File::Write(void *data, u32 len)
 {
-    DWORD bytesWritten;
+    u32 local_8;
 
-    bytesWritten = 0;
-    if (this->access != GENERIC_WRITE)
+    local_8 = 0;
+    if (!this->access || strcmp(this->access, "wb") != 0)
     {
         return false;
     }
 
-    WriteFile(this->handle, data, len, &bytesWritten, NULL);
-    return len == bytesWritten ? true : false;
+    local_8 = SDL_WriteIO(this->file, data, len);
+    return len == local_8;
 }
 
-// FUNCTION: TH07 0x0045e850
-DWORD Pbg4File::Tell()
+u32 Pbg4File::Tell()
 {
-    if (this->handle == INVALID_HANDLE_VALUE)
+    if (!this->file)
     {
         return 0;
     }
     else
     {
-        return SetFilePointer(this->handle, 0, NULL, FILE_CURRENT);
+        return SDL_TellIO(this->file);
     }
 }
 
-// FUNCTION: TH07 0x0045e880
-DWORD Pbg4File::GetSize()
+u32 Pbg4File::GetSize()
 {
-    if (this->handle == INVALID_HANDLE_VALUE)
+    if (!this->file)
     {
         return 0;
     }
     else
     {
-        return GetFileSize(this->handle, NULL);
+        i64 cur = SDL_TellIO(this->file);
+        SDL_SeekIO(this->file, 0, SDL_IO_SEEK_END);
+        u32 size = SDL_TellIO(this->file);
+        SDL_SeekIO(this->file, cur, SDL_IO_SEEK_SET);
+        return size;
     }
 }
 
-// FUNCTION: TH07 0x0045e8b0
-bool Pbg4File::Seek(u32 offset, DWORD seekFrom)
+bool Pbg4File::Seek(u32 offset, SDL_IOWhence seekFrom)
 {
-    if (this->handle == INVALID_HANDLE_VALUE)
+    if (!this->file)
     {
         return false;
     }
 
-    SetFilePointer(this->handle, (LONG)offset, NULL, seekFrom);
+    SDL_SeekIO(this->file, offset, seekFrom);
     return true;
 }
 
-#pragma var_order(buf, fsize, oldPos)
-// FUNCTION: TH07 0x0045e8f0
-HGLOBAL Pbg4File::ReadRemaining(u32 max)
+void *Pbg4File::ReadRemaining(u32 max)
 {
-    HGLOBAL buf;
-    DWORD fsize;
-    DWORD oldPos;
+    void *hMem;
+    u32 DVar2;
+    u32 DVar3;
 
-    if (this->access != GENERIC_READ)
+    if (!this->access || strcmp(this->access, "rb") != 0)
     {
         return NULL;
     }
 
-    fsize = this->GetSize();
-    if (fsize > max)
+    DVar2 = this->GetSize();
+    if (DVar2 > max)
     {
         return NULL;
     }
 
-    buf = GlobalAlloc(GMEM_ZEROINIT, fsize);
-    if (!buf)
+    hMem = calloc(1, DVar2);
+    if (!hMem)
     {
         return NULL;
     }
 
-    oldPos = this->Tell();
-    if (!this->Seek(oldPos, g_SeekModes[FILE_BEGIN]))
+    DVar3 = this->Tell();
+    if (!this->Seek(DVar3, g_SeekModes[0]))
     {
         return NULL;
     }
 
-    if (this->Read(buf, fsize) == 0)
+    if (this->Read(hMem, DVar2) == 0)
     {
-        if (buf)
+        if (hMem)
         {
-            GlobalFree(buf);
-            buf = NULL;
+            free(hMem);
+            hMem = NULL;
         }
         return NULL;
     }
 
-    this->Seek(oldPos, g_SeekModes[FILE_BEGIN]);
-    return buf;
+    this->Seek(DVar3, g_SeekModes[0]);
+    return hMem;
 }
 
-// FUNCTION: TH07 0x0045e9d0
 void Pbg4File::GetFullPath(char *out, const char *filename)
 {
-    if (strchr(filename, ':') != NULL)
+#ifdef __ANDROID__
+    snprintf(out, 1024, "%s", filename);
+    return;
+#endif
+
+#ifdef _WIN32
+    if (strchr(filename, ':') != nullptr)
     {
-        strcpy(out, filename);
+        snprintf(out, 1024, "%s", filename);
+        return;
+    }
+#else
+    if (filename[0] == '/')
+    {
+        snprintf(out, 1024, "%s", filename);
+        return;
+    }
+#endif
+
+    const char *base = SDL_GetBasePath();
+    if (base)
+    {
+        snprintf(out, 1024, "%s%s", base, filename);
     }
     else
     {
-        GetModuleFileNameA(NULL, out, 0x104);
-        char *backslashPos = strrchr(out, '\\');
-        if (!backslashPos)
-        {
-            strcpy(out, "");
-        }
-        backslashPos[1] = '\0';
-        strcat(out, filename);
+        snprintf(out, 1024, "%s", filename);
     }
 }

@@ -281,6 +281,56 @@ void TextOverlayFlush()
     g_OverlayStrings.clear();
 
     RenderTextureUpload(g_OverlayTexture, g_OverlayPixels);
+
+    {
+        // Report how much of the layer has ink. A blit of an empty layer is harmless but
+        // pointless, and a layer that is fully opaque would hide the game underneath.
+        static u32 overlayLog;
+        if (overlayLog < 12)
+        {
+            overlayLog++;
+            u32 inked = 0;
+            u32 opaque = 0;
+            u32 total = (u32)(g_OverlayWidth * g_OverlayHeight);
+            for (u32 i = 0; i < total; i++)
+            {
+                u8 a = g_OverlayPixels[i * 4 + 3];
+                if (a != 0)
+                {
+                    inked++;
+                }
+                if (a == 255)
+                {
+                    opaque++;
+                }
+            }
+            FILE *log = fopen("overlay.txt", "ab");
+            if (log)
+            {
+                fprintf(log, "layer inked=%u opaque=%u /%u\n", inked, opaque, total);
+                fclose(log);
+            }
+        }
+    }
+
+    // Only composite when the layer actually has ink. An untouched layer is fully
+    // transparent, and blitting it still costs a full-screen draw that inherits whatever
+    // GL state the previous pass left behind.
+    {
+        bool hasInk = false;
+        for (u32 i = 0; i < (u32)(g_OverlayWidth * g_OverlayHeight) && !hasInk; i++)
+        {
+            if (g_OverlayPixels[i * 4 + 3] != 0)
+            {
+                hasInk = true;
+            }
+        }
+        if (!hasInk)
+        {
+            return;
+        }
+    }
+
     RenderSurfaceBlitToScreen(g_OverlayTexture, 0, 0, 0, 0, g_OverlayWidth,
                               g_OverlayHeight);
 }

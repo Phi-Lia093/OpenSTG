@@ -866,7 +866,9 @@ void AnmManager::Flush()
     RenderTexture *texture =
         this->currentTexture ? this->currentTexture->texture : NULL;
 
+    g_DrawSource = "flush";
     RendererDrawTriangles(scratch, (i32)n, texture, texture != NULL);
+    g_DrawSource = NULL;
     RendererDrawTriangles(scratch, (i32)n, texture, texture != NULL);
 
 
@@ -1504,6 +1506,31 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
         return ZUN_ERROR;
     }
 
+    {
+        static u32 uvProbeLog;
+        if (uvProbeLog < 10)
+        {
+            uvProbeLog++;
+            FILE *log = fopen("uvprobe.txt", "ab");
+            if (log)
+            {
+                // Identify which VM this is: the sprite index and the texture it resolves
+                // to are what separate a stage background from a leftover menu object.
+                fprintf(log,
+                        "vm=%p spriteIdx=%d srcFile=%d gl=%u pos=(%.1f,%.1f,%.1f) "
+                        "texW=%.0f startPx=(%.1f,%.1f) uv=(%.4f,%.4f)-(%.4f,%.4f)\n",
+                        (void *)vm, (i32)vm->activeSpriteIdx,
+                        (i32)vm->sprite->sourceFileIndex, texture->glTexture, vm->pos.x,
+                        vm->pos.y, vm->pos.z, vm->sprite->textureWidth,
+                        vm->sprite->startPixelInclusive.x,
+                        vm->sprite->startPixelInclusive.y, vm->sprite->uvStart.x,
+                        vm->sprite->uvStart.y, vm->sprite->uvEnd.x,
+                        vm->sprite->uvEnd.y);
+                fclose(log);
+            }
+        }
+    }
+
     RenderColor color = vm->useColor2 ? vm->color2.color : vm->color.color;
     if (this->colorMulEnabled)
     {
@@ -1514,14 +1541,21 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
             ZunColor::Multiply((color >> 24) & 0xff, this->color.bytes.a));
     }
 
-    f32 uvX = vm->sprite->uvStart.x + vm->uvScrollPos.x;
-    f32 uvY = vm->sprite->uvStart.y + vm->uvScrollPos.y;
-    f32 uvW = vm->sprite->uvEnd.x - vm->sprite->uvStart.x;
-    f32 uvH = vm->sprite->uvEnd.y - vm->sprite->uvStart.y;
+    // D3D fed the unit quad's own 0..1 coordinates through a texture matrix
+    // (D3DTS_TEXTURE0) built from vm->uvMatrix, whose diagonal scales that unit range to
+    // the sprite's share of the atlas and whose translation row moves it to the sprite's
+    // origin. Sampling uvStart..uvEnd directly skips that scale, so anything whose sprite
+    // is not a full-atlas quad reads the wrong texels.
+    uv = vm->uvMatrix;
+    uv.m[2][0] = vm->sprite->uvStart.x + vm->uvScrollPos.x;
+    uv.m[2][1] = vm->sprite->uvStart.y + vm->uvScrollPos.y;
 
     // Corner order matches g_Quad3DFallback: TL, TR, BL, BR.
     static const f32 cornerX[4] = {-128.0f, 128.0f, -128.0f, 128.0f};
     static const f32 cornerY[4] = {-128.0f, -128.0f, 128.0f, 128.0f};
+    // The quad spans -128..128, which D3D's texture matrix sees as 0..1.
+    static const f32 cornerU[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+    static const f32 cornerV[4] = {0.0f, 0.0f, 1.0f, 1.0f};
 
     RenderVertex quad[4];
     for (i32 corner = 0; corner < 4; corner++)
@@ -1538,16 +1572,49 @@ ZunResult AnmManager::Draw3(AnmVm *vm)
 
         quad[corner].x = projected.x;
         quad[corner].y = projected.y;
-        quad[corner].z = projected.z;
+        // D3DXVec3Project returns a depth in D3D's 0..1 range, while GL's clip space is
+        // -1..1. Passing it through unchanged would put every 3D surface in the back half
+        // of the depth buffer and compare it against the wrong side of the 2D sprites,
+        // which use 0.5.
+        quad[corner].z = projected.z * 2.0f - 1.0f;
         quad[corner].color = color;
-        quad[corner].u = uvX + (corner == 1 || corner == 3 ? uvW : 0.0f);
-        quad[corner].v = uvY + (corner == 2 || corner == 3 ? uvH : 0.0f);
+        // Texture coordinates go through the same matrix the device applied: the unit
+        // corner value is scaled by the sprite's share of the atlas, then translated.
+        {
+            f32 cu = cornerU[corner];
+            f32 cv = cornerV[corner];
+            quad[corner].u = cu * uv.m[0][0] + cv * uv.m[1][0] + uv.m[2][0];
+            quad[corner].v = cu * uv.m[0][1] + cv * uv.m[1][1] + uv.m[2][1];
+        }
     }
 
     // Two triangles from the quad: TL, TR, BL and TR, BR, BL.
     RenderVertex triangles[6] = {quad[0], quad[1], quad[2],
                                  quad[1], quad[3], quad[2]};
+
+    {
+        static u32 projLog;
+        if (projLog < 8)
+        {
+            projLog++;
+            FILE *log = fopen("draw3.txt", "ab");
+            if (log)
+            {
+                fprintf(log,
+                        "vm pos=(%.1f,%.1f,%.1f) scale=(%.2f,%.2f) "
+                        "proj TL=(%.1f,%.1f) TR=(%.1f,%.1f) BL=(%.1f,%.1f) "
+                        "BR=(%.1f,%.1f) color=%08x\n",
+                        vm->pos.x, vm->pos.y, vm->pos.z, vm->scale.x, vm->scale.y,
+                        quad[0].x, quad[0].y, quad[1].x, quad[1].y, quad[2].x,
+                        quad[2].y, quad[3].x, quad[3].y, color);
+                fclose(log);
+            }
+        }
+    }
+
+    g_DrawSource = "draw3";
     RendererDrawTriangles(triangles, 6, texture, true);
+    g_DrawSource = NULL;
     return ZUN_SUCCESS;
 }
 

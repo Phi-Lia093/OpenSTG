@@ -91,6 +91,8 @@ void RenderSurfaceBlitToScreen(RenderTexture *src, i32 dstX, i32 dstY, i32 srcX,
 void RendererCaptureBackbuffer(RenderTexture *texture);
 
 // Reads the whole framebuffer into an RGBA8 buffer, top row first.
+void RendererDumpTexture(RenderTexture *texture, const char *path);
+
 void RendererReadPixels(u8 *rgba, i32 width, i32 height);
 
 // Writes a summary of the current framebuffer and renderer state to a file.
@@ -231,6 +233,9 @@ void RendererBeginFrame();
 
 // Draws a run of triangle-list vertices in one batch. `texture` may be null, in which
 // case the vertex colour is used directly (the original's SELECTARG1 path).
+// Diagnostic tag naming the path a draw originated from.
+extern const char *g_DrawSource;
+
 void RendererDrawTriangles(const RenderVertex *vertices, i32 vertexCount,
                            RenderTexture *texture, bool useTexture);
 

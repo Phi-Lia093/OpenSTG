@@ -400,8 +400,22 @@ begin_loop:
         // are undefined, so anything the game does not repaint this frame -- a region
         // outside a menu's background blit, or a transparent part of it -- would show
         // leftovers from an older frame and flicker between two images.
+        //
+        // This only runs once per Render() call: the body below is re-entered with
+        // `goto begin_loop` to advance several logic frames, and clearing again there
+        // would wipe what the previous pass drew before it ever reached the screen.
         if (!clearedThisFrame)
         {
+            {
+                static u32 clearCount;
+                clearCount++;
+                FILE *log = fopen("clear_count.txt", "ab");
+                if (log)
+                {
+                    fprintf(log, "clear #%u frame=%d\n", clearCount, (i32)this->curFrame);
+                    fclose(log);
+                }
+            }
             RendererClear(0.0f, 0.0f, 0.0f);
             TextOverlayBegin();
             clearedThisFrame = TRUE;

@@ -610,6 +610,26 @@ struct AnmManager
         return &this->sprites[spriteIdx];
     }
 
+    // Diagnostics: which GL texture a slot currently maps to.
+    void *GetTextureHandle(i32 slot)
+    {
+        return this->textures[slot];
+    }
+
+    void DumpTexturePixels(i32 slot, const char *path)
+    {
+        if (this->textures[slot])
+        {
+            RendererDumpTexture(this->textures[slot]->texture, path);
+        }
+    }
+
+    u32 GetTextureGlId(i32 slot)
+    {
+        TextureHandle *handle = this->textures[slot];
+        return handle && handle->texture ? handle->texture->glTexture : 0u;
+    }
+
     static void SetCameraModeStatic(AnmManager *mgr, i32 cameraMode)
     {
         mgr->currentCameraMode = cameraMode;

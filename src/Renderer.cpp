@@ -238,6 +238,7 @@ typedef void (__stdcall *PFN_glEnable)(GLenum);
 typedef void (__stdcall *PFN_glDisable)(GLenum);
 typedef void (__stdcall *PFN_glBlendFunc)(GLenum, GLenum);
 typedef void (__stdcall *PFN_glDepthMask)(GLboolean);
+typedef void (__stdcall *PFN_glDepthFunc)(GLenum);
 typedef void (__stdcall *PFN_glGenFramebuffers)(GLsizei, GLuint *);
 typedef void (__stdcall *PFN_glBindFramebuffer)(GLenum, GLuint);
 typedef void (__stdcall *PFN_glFramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
@@ -246,6 +247,7 @@ typedef const GLubyte *(__stdcall *PFN_glGetString)(GLenum);
 typedef void (__stdcall *PFN_glCopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint,
                                         GLsizei, GLsizei);
 typedef void (__stdcall *PFN_glScissor)(GLint, GLint, GLsizei, GLsizei);
+typedef void (__stdcall *PFN_glGetTexImage)(GLenum, GLint, GLenum, GLenum, void *);
 typedef void (__stdcall *PFN_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 
 static void *GLProc(const char *name)
@@ -293,6 +295,7 @@ PFN_glEnable glEnable;
 PFN_glDisable glDisable;
 PFN_glBlendFunc glBlendFunc;
 PFN_glDepthMask glDepthMask;
+PFN_glDepthFunc glDepthFunc;
 PFN_glGenFramebuffers glGenFramebuffers;
 PFN_glBindFramebuffer glBindFramebuffer;
 PFN_glFramebufferTexture2D glFramebufferTexture2D;
@@ -301,6 +304,7 @@ PFN_glGetString glGetString;
 PFN_glCopyTexSubImage2D glCopyTexSubImage2D;
 PFN_glScissor glScissor;
 PFN_glReadPixels glReadPixels;
+PFN_glGetTexImage glGetTexImage;
 
 #define GL_FALSE 0
 #define GL_TRUE 1
@@ -319,6 +323,7 @@ PFN_glReadPixels glReadPixels;
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_BLEND 0x0BE2
 #define GL_DEPTH_TEST 0x0B71
+#define GL_LEQUAL 0x0203
 #define GL_SRC_ALPHA 0x0302
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
 #define GL_ONE 1
@@ -386,6 +391,7 @@ static bool LoadGL()
     LOAD(glDisable);
     LOAD(glBlendFunc);
     LOAD(glDepthMask);
+    LOAD(glDepthFunc);
     LOAD(glGenFramebuffers);
     LOAD(glBindFramebuffer);
     LOAD(glFramebufferTexture2D);
@@ -394,6 +400,7 @@ static bool LoadGL()
     LOAD(glCopyTexSubImage2D);
     LOAD(glScissor);
     LOAD(glReadPixels);
+    LOAD(glGetTexImage);
     return true;
 }
 
@@ -640,6 +647,24 @@ void RendererSetViewport(i32 x, i32 y, i32 width, i32 height)
 
 void RendererClear(f32 r, f32 g, f32 b)
 {
+    {
+        // Record only clears that are not the frame-start black, so the stage's sky
+        // colour stands out from the per-frame reset.
+        if (r != 0.0f || g != 0.0f || b != 0.0f)
+        {
+            static u32 clearLog;
+            if (clearLog < 10)
+            {
+                clearLog++;
+                FILE *log = fopen("clears.txt", "ab");
+                if (log)
+                {
+                    fprintf(log, "sky clear %.3f %.3f %.3f\n", r, g, b);
+                    fclose(log);
+                }
+            }
+        }
+    }
     Entry::glClearColor(r, g, b, 1.0f);
     Entry::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
@@ -679,6 +704,10 @@ void RendererSetZWrite(bool enabled)
     Entry::glDepthMask(enabled ? GL_TRUE : GL_FALSE);
     if (enabled)
     {
+        // D3D compares with LESSEQUAL by default; GL defaults to LESS. Sprites that share
+        // a depth plane -- which most of the stage background does -- would otherwise
+        // erase each other instead of layering.
+        Entry::glDepthFunc(GL_LEQUAL);
         Entry::glEnable(GL_DEPTH_TEST);
     }
     else
@@ -740,6 +769,8 @@ void RendererBeginFrame()
     Entry::glUniformMatrix4fv(g_Renderer.uViewProj, 1, GL_FALSE, upload);
 }
 
+const char *g_DrawSource = NULL;
+
 void RendererDrawTriangles(const RenderVertex *vertices, i32 vertexCount,
                            RenderTexture *texture, bool useTexture)
 {
@@ -757,6 +788,12 @@ void RendererDrawTriangles(const RenderVertex *vertices, i32 vertexCount,
     {
         useTexture = false;
     }
+
+    // Make sure the program and its uniforms are actually in effect. glUniform* silently
+    // does nothing when no program is bound, and the batch can be drawn long after
+    // RendererBeginFrame ran, with framebuffer and state changes in between.
+    Entry::glUseProgram(g_Renderer.program);
+    Entry::glBindVertexArray(g_Renderer.vao);
 
     // The sampler must be told which unit to read. GL leaves a sampler on unit 0 by
     // default, but relying on that is fragile, and the uniform is easy to set here.
@@ -787,6 +824,48 @@ void RendererDrawTriangles(const RenderVertex *vertices, i32 vertexCount,
     if (!useTexture)
     {
         g_SkippedNoTexture++;
+    }
+    {
+        // Draws are logged by origin: the 3D path is rare, so it gets its own file and
+        // cannot be crowded out by the menu's many 2D draws.
+        bool isBlit = g_DrawSource && strcmp(g_DrawSource, "blit") == 0;
+        bool is3D = g_DrawSource && strcmp(g_DrawSource, "draw3") == 0;
+        static u32 drawLog;
+        static u32 draw3Log;
+        bool want = is3D ? (draw3Log < 20) : (!isBlit && drawLog < 40);
+        if (want)
+        {
+            if (is3D)
+            {
+                draw3Log++;
+            }
+            else
+            {
+                drawLog++;
+            }
+            f32 minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+            f32 minZ = 1e9f, maxZ = -1e9f;
+            for (i32 i = 0; i < vertexCount; i++)
+            {
+                if (vertices[i].x < minX) minX = vertices[i].x;
+                if (vertices[i].x > maxX) maxX = vertices[i].x;
+                if (vertices[i].y < minY) minY = vertices[i].y;
+                if (vertices[i].y > maxY) maxY = vertices[i].y;
+                if (vertices[i].z < minZ) minZ = vertices[i].z;
+                if (vertices[i].z > maxZ) maxZ = vertices[i].z;
+            }
+            FILE *log = fopen(is3D ? "draw3only.txt" : "draws.txt", "ab");
+            if (log)
+            {
+                fprintf(log,
+                        "#%u verts=%d gl=%u tex=%d x=%.1f..%.1f y=%.1f..%.1f "
+                        "z=%.4f..%.4f color=%08x from=%s\n",
+                        drawLog, vertexCount, glTexture, useTexture ? 1 : 0, minX, maxX,
+                        minY, maxY, minZ, maxZ, vertices[0].color,
+                        g_DrawSource ? g_DrawSource : "?");
+                fclose(log);
+            }
+        }
     }
     for (i32 i = 0; i < vertexCount; i++)
     {
@@ -825,6 +904,30 @@ RenderTexture *RenderTextureCreate(u32 width, u32 height, const void *rgba)
     Entry::glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)width,
                         (GLsizei)height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                         rgba);
+
+    {
+        // Dump the first few uploaded textures. A screen that is one flat colour is often
+        // a texture that has no detail of its own.
+        static u32 texDump;
+        if (texDump < 10 && rgba && width >= 64 && height >= 64)
+        {
+            texDump++;
+            char name[64];
+            sprintf(name, "tex_%u.ppm", (unsigned)texture->glTexture);
+            FILE *ppm = fopen(name, "wb");
+            if (ppm)
+            {
+                const u8 *px = (const u8 *)rgba;
+                fprintf(ppm, "P6\n%u %u\n255\n", width, height);
+                for (u32 i = 0; i < width * height; i++)
+                {
+                    fwrite(&px[i * 4], 1, 3, ppm);
+                }
+                fclose(ppm);
+            }
+        }
+    }
+
     return texture;
 }
 
@@ -861,6 +964,29 @@ void RenderTextureUpload(RenderTexture *texture, const void *rgba)
     // The bind above changed which texture is current, so the renderer's idea of it is
     // stale from here on.
     g_Renderer.currentTexture = texture->glTexture;
+
+    {
+        // Dump the first few textures that are uploaded, so a flat-coloured screen can be
+        // traced back to a texture that itself has no detail.
+        static u32 uploadLog;
+        if (uploadLog < 8 && rgba)
+        {
+            uploadLog++;
+            char name[64];
+            sprintf(name, "tex_%u.ppm", (unsigned)texture->glTexture);
+            FILE *ppm = fopen(name, "wb");
+            if (ppm)
+            {
+                const u8 *px = (const u8 *)rgba;
+                fprintf(ppm, "P6\n%d %d\n255\n", texture->width, texture->height);
+                for (i32 i = 0; i < texture->width * texture->height; i++)
+                {
+                    fwrite(&px[i * 4], 1, 3, ppm);
+                }
+                fclose(ppm);
+            }
+        }
+    }
 }
 
 // --- surfaces --------------------------------------------------------------------
@@ -950,7 +1076,47 @@ void RenderSurfaceBlitToScreen(RenderTexture *src, i32 dstX, i32 dstY, i32 srcX,
         {x0, y1, 0.0f, 0xffffffff, u0, v1}, {x1, y0, 0.0f, 0xffffffff, u1, v0},
         {x1, y1, 0.0f, 0xffffffff, u1, v1}, {x0, y1, 0.0f, 0xffffffff, u0, v1},
     };
+    g_DrawSource = "blit";
     RendererDrawTriangles(quad, 6, src, true);
+    g_DrawSource = NULL;
+}
+
+// Writes a texture's contents to a binary PPM. Reading it back from the GPU is the only
+// way to see what the shader is really sampling, as opposed to what the loader intended.
+void RendererDumpTexture(RenderTexture *texture, const char *path)
+{
+    if (!texture || !path || !Entry::glGetTexImage)
+    {
+        return;
+    }
+    u32 bytes = (u32)(texture->width * texture->height) * 4;
+    u8 *rgba = (u8 *)malloc(bytes);
+    if (!rgba)
+    {
+        return;
+    }
+    Entry::glBindTexture(GL_TEXTURE_2D, texture->glTexture);
+    g_Renderer.currentTexture = texture->glTexture;
+    Entry::glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+
+    FILE *ppm = fopen(path, "wb");
+    if (ppm)
+    {
+        fprintf(ppm, "P6\n%d %d\n255\n", texture->width, texture->height);
+        for (i32 i = 0; i < texture->width * texture->height; i++)
+        {
+            // Composite over black so transparent texels do not read as white.
+            u32 a = rgba[i * 4 + 3];
+            u8 rgb[3];
+            for (i32 c = 0; c < 3; c++)
+            {
+                rgb[c] = (u8)((u32)rgba[i * 4 + c] * a / 255);
+            }
+            fwrite(rgb, 1, 3, ppm);
+        }
+        fclose(ppm);
+    }
+    free(rgba);
 }
 
 void RendererReadPixels(u8 *rgba, i32 width, i32 height)

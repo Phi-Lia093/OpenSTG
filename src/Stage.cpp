@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "Stage.hpp"
 
 #include "AnmManager.hpp"
@@ -536,6 +537,25 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
     ZunColor fogColor;
     D3DVIEWPORT8 viewport;
 
+    {
+        static u32 stageDrawLog;
+        if (stageDrawLog < 3)
+        {
+            stageDrawLog++;
+            FILE *log = fopen("stage.txt", "ab");
+            if (log)
+            {
+                fprintf(log, "OnDrawHighPrio color=%08x clearBg=%d vm1.active=%d vm2.active=%d\n",
+                        arg->color, (i32)arg->clearBackground,
+                        (i32)arg->vm1.activeSpriteIdx, (i32)arg->vm2.activeSpriteIdx);
+                fclose(log);
+            }
+            // Dump the stage background atlas through the CPU copy, which is the only
+            // way to see what the GPU is sampling.
+            g_AnmManager->DumpTexturePixels(5, "stage_bg.ppm");
+        }
+    }
+
     g_AnmManager->ResetVertexBuffer();
     g_AnmManager->SetVertexShader(255);
     g_AnmManager->SetSprite(NULL);
@@ -582,15 +602,44 @@ u32 Stage::OnDrawHighPrio(Stage *arg)
     // A non-zero colour clears the whole target, otherwise only the depth buffer.
     if (arg->color != 0)
     {
+        {
+            static u32 skyLog;
+            if (skyLog < 5)
+            {
+                skyLog++;
+                FILE *log = fopen("clear_count.txt", "ab");
+                if (log)
+                {
+                    fprintf(log, "stage sky clear color=%08x\n", arg->color);
+                    fclose(log);
+                }
+            }
+        }
         RendererClear(((arg->color >> 16) & 0xff) / 255.0f,
                       ((arg->color >> 8) & 0xff) / 255.0f,
                       (arg->color & 0xff) / 255.0f);
     }
     else
     {
+        {
+            static u32 depthLog;
+            if (depthLog < 5)
+            {
+                depthLog++;
+                FILE *log = fopen("clear_count.txt", "ab");
+                if (log)
+                {
+                    fprintf(log, "stage depth-only clear\n");
+                    fclose(log);
+                }
+            }
+        }
         RendererClearDepth();
     }
     RendererSetZWrite(true);
+    // EXPERIMENT: depth test off, to see whether the background layers are hiding each
+    // other rather than not drawing at all.
+    RendererSetZWrite(false);
     // Fog colour and planes are kept in the stage state because the background
     // shader path reads them; the renderer itself does not apply per-vertex fog.
     if (!g_AnmManager->colorMulEnabled)

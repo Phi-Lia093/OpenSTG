@@ -217,10 +217,11 @@ u32 GameManager::OnUpdate(GameManager *arg)
             g_GameManager.csumFloat = -9999.0f;
         }
     }
-    RendererClearRegion(0, 0, GAME_WINDOW_WIDTH, GAME_WINDOW_HEIGHT,
-                        ((g_Stage.skyFog.color.color >> 16) & 0xff) / 255.0f,
-                        ((g_Stage.skyFog.color.color >> 8) & 0xff) / 255.0f,
-                        (g_Stage.skyFog.color.color & 0xff) / 255.0f);
+    // The original cleared the target to the sky-fog colour here, inside OnUpdate. D3D
+    // applied that clear to the back buffer before Present, which worked because the
+    // stage repainted everything afterwards; here OnUpdate runs *after* the draw chain
+    // for the frame, so the same clear wiped the frame that was about to be presented.
+    // The stage already clears its own background when it draws, so nothing is needed.
     if (arg->isInPauseMenu == 1 || arg->isInPauseMenu == 2 ||
         arg->isInRetryMenu)
     {

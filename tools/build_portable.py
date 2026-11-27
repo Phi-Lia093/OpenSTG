@@ -1,12 +1,17 @@
+#!/usr/bin/env python3
 """
 
-Build the port on Windows with the SDL packages in .tools.
+Build the game on Windows with SDL linked statically, and assemble build/run/.
 
-Assets (th07.dat, thbgm.dat, msgothic.ttc) and the SDL DLLs are copied next to the
-executable afterwards so it runs from build/run alone.
-
-    python tools/build_portable.py            # configure + build
+    python tools/build_portable.py            # configure + build + assemble
     python tools/build_portable.py --clean    # wipe build/ first
+
+The executable links SDL3, SDL3_image and SDL3_ttf as static libraries, so build/run/
+holds no SDL DLLs; everything it needs at runtime is a Windows system DLL. The archives
+come from tools/build_sdl_static.py, which has to run once beforehand.
+
+Game data is the th07.data/ asset directory, produced from the original archive by
+tools/extract_assets.py, plus thbgm.dat and a font.
 """
 
 from __future__ import annotations
@@ -14,25 +19,20 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / ".tools"
 BUILD = ROOT / "build"
 
-SDL3 = TOOLS / "sdl3/SDL3-3.4.20"
-SDLIMAGE = TOOLS / "sdlimage/SDL3_image-3.4.8"
-SDLTTF = TOOLS / "sdlttf/SDL3_ttf-3.2.2"
+STATIC = TOOLS / "static"
 
+# Files copied next to the executable. The font is embedded in the resource section, so the
+# only game data that has to sit beside the executable is the music stream; the rest is the
+# th07.data/ directory produced by extract_assets.py.
 ASSETS = [
-    (TOOLS / "th07.dat", "th07.dat"),
     (TOOLS / "thbgm.dat", "thbgm.dat"),
-    (Path(r"C:\Windows\Fonts\msgothic.ttc"), "msgothic.ttc"),
-]
-DLLS = [
-    (SDL3 / "lib/x86/SDL3.dll", "SDL3.dll"),
-    (SDLIMAGE / "lib/x86/SDL3_image.dll", "SDL3_image.dll"),
-    (SDLTTF / "lib/x86/SDL3_ttf.dll", "SDL3_ttf.dll"),
 ]
 
 
@@ -70,24 +70,21 @@ def main() -> int:
         print("cmake not found")
         return 1
 
+    for lib, what in ((STATIC / "lib/SDL3-static.lib", "SDL3"),
+                      (STATIC / "lib/SDL3_image-static.lib", "SDL3_image"),
+                      (STATIC / "lib/SDL3_ttf-static.lib", "SDL3_ttf")):
+        if not lib.is_file():
+            print(f"missing static {what}: {lib}")
+            print("Run: python tools/build_sdl_static.py")
+            return 1
+
     if args.clean:
         shutil.rmtree(BUILD, ignore_errors=True)
     BUILD.mkdir(parents=True, exist_ok=True)
 
-    for path, what in ((SDL3 / "lib/x86/SDL3.dll", "SDL3"),
-                       (SDLTTF / "lib/x86/SDL3_ttf.dll", "SDL3_ttf")):
-        if not path.exists():
-            print(f"missing {what}: {path}")
-            return 1
-
     generator = find_vs_generator(cmake)
-    configure = [
-        str(cmake), "-S", str(ROOT), "-B", str(BUILD),
-        "-G", generator, "-A", "Win32",
-        f"-DSDL3_DIR={SDL3 / 'cmake'}",
-        f"-DSDL3_image_DIR={SDLIMAGE / 'cmake'}",
-        f"-DSDL3_ttf_DIR={SDLTTF / 'cmake'}",
-    ]
+    configure = [str(cmake), "-S", str(ROOT), "-B", str(BUILD),
+                 "-G", generator, "-A", "Win32"]
     print(" ".join(configure))
     result = subprocess.run(configure, capture_output=True, text=True, errors="replace")
     print(result.stdout[-4000:])
@@ -110,11 +107,22 @@ def main() -> int:
     run_dir = BUILD / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exe, run_dir / "th07.exe")
-    for source, name in ASSETS + DLLS:
+    for source, name in ASSETS:
         if source.exists():
             shutil.copy2(source, run_dir / name)
         else:
             print(f"warning: missing {source}")
+
+    # The game data: unpack the original archive into th07.data/ unless it is already there.
+    if not (run_dir / "th07.data").is_dir():
+        extract = subprocess.run(
+            [sys.executable, str(ROOT / "tools/extract_assets.py"),
+             "--out", str(run_dir / "th07.data")],
+            capture_output=True, text=True, errors="replace")
+        print(extract.stdout[-2000:])
+        if extract.returncode != 0:
+            print("asset extraction failed; the game will not start without th07.data/")
+            return 1
 
     print(f"\n{run_dir / 'th07.exe'}  ({(run_dir / 'th07.exe').stat().st_size} bytes)")
     return 0

@@ -4,6 +4,7 @@
 #include <SDL3_ttf/SDL_ttf.h>
 
 #include "GameErrorContext.hpp"
+#include "EmbeddedAssets.hpp"
 #include "Supervisor.hpp"
 #include "graphics/ZunGraphics.hpp"
 #include "inttypes.hpp"
@@ -216,7 +217,15 @@ ZunResult TextHelper::CreateTextBuffer()
         return ZUN_ERROR;
     }
 
-    g_Font = TTF_OpenFont(FileSystem::GetBasePath("msgothic.ttc").c_str(), 10);
+    // The font ships inside the executable's resource section; OpenFontStream falls back
+    // to msgothic.ttc beside the executable when the build has no embedded copy.
+    SDL_IOStream *fontStream = EmbeddedAssets::OpenFontStream();
+    if (!fontStream)
+    {
+        g_GameErrorContext.Log("font not found: %s\n", SDL_GetError());
+        return ZUN_ERROR;
+    }
+    g_Font = TTF_OpenFontIO(fontStream, true, 10);
     if (!g_Font)
     {
         g_GameErrorContext.Log("TTF_OpenFont fail : %s\n", SDL_GetError());

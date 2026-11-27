@@ -87,18 +87,38 @@ The GL context itself is created explicitly in `GameWindow.cpp`. In SDL3 the
 `SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN` property only marks a window as GL-capable; it
 does not attach a context.
 
+## Assets
+
+There are two ways the game gets data, split by whether the data ever changes.
+
+### Loose files: `th07.data/`
+
+The game reads its data from `th07.data/`, a directory of loose files next to the
+executable, through `AssetStore`. Files are addressed by bare name — the game asks for
+`data/ascii.anm` and the directory holds `ascii.anm` — which is how the original archive
+was laid out.
+
+This replaced the original PBG4 archive. `AssetStore` keeps a container switch so a ZIP can
+be read later without callers changing.
+
+`thbgm.dat` is not part of this. It is a single PCM stream addressed by offset, with a
+separate `.fmt` describing the track table, and `SoundPlayer` reads it directly.
+
+### Resources in the executable
+
+Things that never change and would be awkward as loose files are compiled into the
+executable's resource section by the generated `th07.rc`: the window icon, a version
+record, and the text font. `EmbeddedAssets` locates them with `FindResourceW` and, for the
+font, hands the bytes to SDL_ttf through a read-only memory stream, so the 8.8 MB never
+touches the file system.
+
+The font has a fallback: if the build embedded none, it is opened from `msgothic.ttc`
+beside the executable.
+
 ## Data formats
 
-These are the original formats and the reason for much of the planned work.
-
-### PBG4 archives
-
-`th07.dat` and `thbgm.dat` are PBG4 archives: a header, an index of entries, and each
-entry compressed with LZSS. `src/pbg4/` reads them. Every file the game opens goes through
-`FileSystem::OpenFile`, which is the single point where archive access happens.
-
-`thbgm.dat` is a different case: it holds audio streams addressed by offset, not
-individually compressed files.
+Below the asset layer, these are the original formats and the reason for much of the
+planned work.
 
 ### ANM
 
@@ -128,15 +148,16 @@ back to defaults if anything is out of range.
 ### Text
 
 The game's own text is Shift-JIS, converted to UTF-8 for rendering by `src/sj2utf8/`.
-Dialogue and menu strings live inside the data archives.
+Dialogue and menu strings live in the data files under `th07.data/`.
 
 ## What this means for the planned work
 
 The formats above are self-contained behind narrow interfaces, which is what makes the
 planned replacements tractable:
 
-- All file access goes through `FileSystem::OpenFile`, so changing the container format
-  touches one place.
+- All file access goes through `AssetStore`, so changing the container touches one place.
+  This has already been exercised: the original archive was replaced by a directory
+  without any caller changing.
 - Graphics is behind `ZunGraphics`, so resolution handling changes in one implementation.
 - Audio is behind `SoundPlayer` and `MidiOutput`.
 - The scripting VM is behind `EclManager`, and its instruction set is already enumerated

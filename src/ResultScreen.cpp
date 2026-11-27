@@ -17,7 +17,7 @@
 #include "Touch.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
-#include "pbg4/Lzss.hpp"
+#include "compress/Lzss.hpp"
 
 namespace fs = std::filesystem;
 

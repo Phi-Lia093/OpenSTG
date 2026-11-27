@@ -2,9 +2,9 @@
 
 #include <cstdio>
 
+#include "AssetStore.hpp"
 #include "GameErrorContext.hpp"
 #include "Supervisor.hpp"
-#include "pbg4/Pbg4Archive.hpp"
 
 u32 g_LastFileSize;
 
@@ -17,44 +17,27 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
 
     if (!isExternalResource)
     {
-        filename = strrchr(filepath, '\\');
-        if (!filename)
+        // The asset container holds its files by bare name, so a path like "data/x.anm"
+        // is looked up as "x.anm". That matches how the original archive was laid out.
+        filename = filepath;
+        for (const char *p = filepath; *p; p++)
         {
-            filename = filepath;
-        }
-        else
-        {
-            filename++;
+            if (*p == '/' || *p == '\\')
+            {
+                filename = p + 1;
+            }
         }
 
-        filename = strrchr(filename, '/');
-        if (!filename)
-        {
-            filename = filepath;
-        }
-        else
-        {
-            filename++;
-        }
-        fsize = g_Pbg4Archive.GetEntrySize(filename);
-        g_LastFileSize = fsize;
-        if (fsize == 0)
+        u32 size = 0;
+        buf = AssetStore::Read(filename, &size);
+        if (!buf)
         {
             g_GameErrorContext.Fatal("error : %s is not found in arcfile.\n", filename);
             return NULL;
         }
-        if (fsize != 0)
-        {
-            Supervisor::DebugPrint("%s Decode ... \n", filename);
-            buf = (u8 *)malloc(fsize);
-            if (!buf)
-            {
-                return NULL;
-            }
-
-            g_Pbg4Archive.ReadDecompressEntry(filename, buf);
-            return buf;
-        }
+        Supervisor::DebugPrint("%s Decode ... \n", filename);
+        g_LastFileSize = size;
+        return buf;
     }
     Supervisor::DebugPrint("%s Load ... \n", filepath);
     file = SDL_IOFromFile(filepath, "rb");

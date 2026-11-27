@@ -9,52 +9,39 @@ test against.
 
 ## Order at a glance
 
-| Stage | Work | Risk | Payoff |
+| Stage | Work | Risk | Status |
 | --- | --- | --- | --- |
-| 1 | Data container: PBG4 → loose files or zip | Low | Assets become editable and diffable |
-| 2 | i18n: text extracted, UTF-8 throughout | Medium | Translation becomes possible |
-| 3 | Resolution independence | Medium | Any window size, widescreen |
-| 4 | Audio: new subsystem for SE and BGM | Medium | Modern backends, no miniaudio coupling |
-| 5 | Configuration: binary cfg → text | Low | Hand-editable, version tolerant |
-| 6 | ECL: byte-code → Lua | High | Scripts become maintainable |
+| 1 | Data container: PBG4 → loose files | Low | **Done** |
+| 2 | i18n: text extracted, UTF-8 throughout | Medium | Planned |
+| 3 | Resolution independence | Medium | Planned |
+| 4 | Audio: new subsystem for SE and BGM | Medium | Planned |
+| 5 | Configuration: binary cfg → text | Low | Planned |
+| 6 | ECL: byte-code → Lua | High | Planned |
 
 Stages 1, 2 and 3 are ordered first because the later work is easier when assets are
 plain files, strings are externalized, and the coordinate system is not fixed at 640×480.
 
 ---
 
-## Stage 1 — Data container
+## Stage 1 — Data container — Done
 
 **Goal.** Read the game's assets from something ordinary instead of PBG4.
 
-**Why first.** It is the smallest change with the largest effect on everything after it:
-once assets are loose files, they can be inspected, edited and version controlled, and the
-later stages need to add new asset kinds (translation tables, Lua scripts, audio files)
-that do not fit the original archive layout.
+**Result.** Assets are loose files in `th07.data/` next to the executable. `AssetStore`
+replaces the archive: it probes for `th07.data/` and reads files from it by bare name, which
+is how the archive addressed them. The PBG4 reader, its file abstraction and the LZSS path
+that unpacked the archive are gone; LZSS itself remains under `src/compress/` because replay
+and savedata files still use it.
 
-**What exists.** `src/pbg4/` reads the archive. `FileSystem::OpenFile` is the only entry
-point, so this is genuinely a one-place change.
+`tools/extract_assets.py` produces the directory from the original archive with thdat, and
+`tools/build_portable.py` runs it as part of assembling `build/run/`.
 
-**Options.**
+**Still open.** `th07.zip` is not read yet. `AssetStore` has the container switch in place,
+so adding a ZIP reader is a new case rather than a change to callers.
 
-- *Loose files on disk.* Simplest. Every archive path becomes a directory path. Large
-  number of small files, but no tooling needed to inspect them.
-- *ZIP archive.* Keeps the single-file distribution. Needs a ZIP reader; none is vendored
-  yet, and adding one is the main cost.
-
-A reasonable outcome is loose files as the working format, with a packing tool that
-produces a ZIP for distribution.
-
-**Notes.**
-
-- `thbgm.dat` is not a normal archive. It stores audio streams addressed by offset, with a
-  separate `.fmt` describing the track table. It needs its own treatment, and its natural
-  home is stage 4, not here.
-- The unpacking tool should be written against the existing reader rather than by
-  re-parsing the format, so the two cannot drift apart.
-
-**Done when** the game runs from loose files with the archives absent, and a packing tool
-reproduces a working distribution archive from those files.
+Alongside the container change, the text font moved out of the install directory and into
+the executable's resource section, together with the icon and a version record. Everything
+the game needs beside it is now the data: `th07.data/` and `thbgm.dat`.
 
 ---
 

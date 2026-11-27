@@ -10,7 +10,7 @@
 #include "Rng.hpp"
 #include "Supervisor.hpp"
 #include "dxutil.hpp"
-#include "pbg4/Lzss.hpp"
+#include "compress/Lzss.hpp"
 #include <cstdio>
 
 ReplayManager *g_ReplayManager;

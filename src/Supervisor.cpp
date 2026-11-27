@@ -27,7 +27,7 @@
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #include "graphics/ZunGraphics.hpp"
-#include "pbg4/Pbg4Archive.hpp"
+#include "AssetStore.hpp"
 
 ControllerMapping g_ControllerMapping = {0, 1, 2, 4, -1, -1, -1, -1, 3};
 
@@ -397,7 +397,7 @@ ZunResult Supervisor::SetupInput()
 ZunResult Supervisor::LoadGameData()
 {
     char verFile[128];
-    if (g_Pbg4Archive.Load(FileSystem::GetBasePath("th07.dat").c_str()))
+    if (AssetStore::Open())
     {
         sprintf(verFile, "th07_%.4x%c.ver", 256, 98);
         g_Supervisor.versionData = (char *)FileSystem::OpenFile(verFile, 0);
@@ -612,9 +612,8 @@ ZunResult Supervisor::DeletedCallback(Supervisor *arg)
     }
     SAFE_DELETE(g_GameManager.globals);
     SAFE_DELETE(g_GameManager.defaultCfg);
-    g_Pbg4Archive.Release();
-    if (g_Supervisor.midiTimer)
-    {
+    AssetStore::Close();
+    if (g_Supervisor.midiTimer)    {
         StopMidiTimer(g_Supervisor.midiTimer);
         delete g_Supervisor.midiTimer;
         g_Supervisor.midiTimer = NULL;

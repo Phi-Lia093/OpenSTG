@@ -105,6 +105,23 @@ be read later without callers changing.
 `thbgm.dat` is not part of this. It is a single PCM stream addressed by offset, with a
 separate `.fmt` describing the track table, and `SoundPlayer` reads it directly.
 
+### The 31 JPEGs must stay JPEG
+
+> **Do not convert `data/end/*.jpg`, `title00.jpg`, `select00.jpg`, `phantasm.jpg`,
+> `music.jpg`, `result.jpg`, `staff00.jpg` or `th07logo.jpg` to PNG.**
+
+This was tried and reverted. Re-encoding them changes how the game behaves: the original
+relies on details of how these images are decoded and sampled that a PNG does not reproduce,
+and the result is a visible fault. The exact mechanism has not been pinned down, which is a
+reason for caution rather than for trying again.
+
+If these images are ever to change format, it has to come after the engine's graphics layer
+is abstracted — at that point the sampling behaviour is ours to define, rather than something
+inherited from the original's assumptions. Until then the JPEGs stay exactly as extracted.
+
+The conversion is also not free in size: re-encoding these 3.8 MB of JPEG as PNG produced
+12.2 MB.
+
 ### Resources in the executable
 
 Things that never change and would be awkward as loose files are compiled into the

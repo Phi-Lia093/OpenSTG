@@ -282,5 +282,8 @@ Both loaders exist until step 3 passes for every file. That duplication is delib
 - **Whether `loop = true` covers every cycle.** The 214 sprite cycles all end with a jump to
   the first instruction, but whether some of them also rewind the clock in a different way
   needs checking per file.
-- **JPEG conversion.** Straightforward: decode, force alpha to opaque, write PNG. The 31
-  JPEGs are ending art and the title image, none of which has transparency.
+- **JPEG conversion: not to be attempted.** The 31 JPEGs stay as they are. Converting them
+  was tried and reverted: re-encoding changes behaviour in a way that is visible in game,
+  because the original depends on how those images are decoded and sampled. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#the-31-jpegs-must-stay-jpeg). It is out of scope for this
+  work and belongs after the graphics layer is abstracted.

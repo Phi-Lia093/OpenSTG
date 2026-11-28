@@ -198,6 +198,14 @@ byte-code path.
 
 ---
 
+## Hard constraints
+
+- **The JPEGs stay JPEG.** Converting the 31 images in `data/end/` and the title art to PNG
+  was tried and reverted: it changes behaviour in game, because the original depends on how
+  those images are decoded and sampled. It belongs after the graphics layer is abstracted,
+  and is not part of the ANM work. See
+  [ARCHITECTURE.md](ARCHITECTURE.md#the-31-jpegs-must-stay-jpeg).
+
 ## Removed: mobile targets
 
 Done before the stages above, because dead platform code is a hazard for everything that

@@ -17,6 +17,8 @@ not about making the game run.
 The build targets Windows and uses desktop OpenGL 3.3. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the code is laid out today and
 [ROADMAP.md](ROADMAP.md) for the order the work is planned in.
+[ANM_REPLACEMENT.md](ANM_REPLACEMENT.md) covers the largest piece of planned work in detail:
+replacing the binary animation format with images and TOML.
 
 ## Building
 

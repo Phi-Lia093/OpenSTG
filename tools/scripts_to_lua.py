@@ -32,8 +32,9 @@ A stream is a function of the script object, one call per instruction:
 
 `at(t)` is where the original's time comparison lives: it yields while the clock is behind t
 and returns immediately once it is not, so a frame runs as many instructions as the original
-would. Jumps become `goto` and their targets labels, placed only where something jumps to them.
-A register argument, marked in the flags field, is written `r(N)`.
+would. Every instruction, jumps included, is a call: a jump carries the clock it sets as well as
+where it goes, and writing it as `goto` would lose that. A register argument, marked in the
+flags field, is written `{r = N}` -- a value that says it names a register.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ HEADER = ROOT / 'src/script/AnmVm.hpp'
 INTERPRETER = ROOT / 'src/script/AnmManager.cpp'
 
 JUMP = 4
+INTERRUPT_LABEL = 21
 DEC_JUMP = 5
 CONDITIONAL = set(range(67, 79))
 EXITS = {-1, 1, 2, 23}
@@ -122,6 +124,11 @@ def format_number(value: int, is_float: bool) -> str:
     return str(signed)
 
 
+def label_name(label: int) -> str:
+    """The Lua label for an interrupt number. -1 becomes m1, which is a valid name."""
+    return f'Lm1' if label < 0 else f'L{label}'
+
+
 def stream_body(data: bytes, start: int, names: dict[int, str],
                 floats: dict[str, set[int]]) -> list[str]:
     instructions = []
@@ -137,23 +144,28 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
             break
         position += size
 
-    targets = set()
+    # Every interrupt number this stream can be entered at. The entry dispatch at the top of the
+    # function needs all of them, and they have to be known before the body is written.
+    labels = []
     for _, opcode, _, _, _, args in instructions:
-        if opcode == JUMP and len(args) >= 1:
-            targets.add(args[0])
-        elif opcode == DEC_JUMP and len(args) >= 2:
-            targets.add(args[1])
-        elif opcode in CONDITIONAL and len(args) >= 3:
-            targets.add(args[2])
+        if opcode == INTERRUPT_LABEL and args:
+            value = struct.unpack('<i', struct.pack('<I', args[0]))[0]
+            if value not in labels:
+                labels.append(value)
 
     lines = []
+
+    if labels:
+        # The entry point, then a jump for each label. `local at` is the only local in the
+        # function, and it is declared before every label, so no goto crosses a declaration.
+        lines.append('        local at = s:entry()')
+        for value in labels:
+            lines.append(f'        if at == {value} then goto {label_name(value)} end')
+
     current_time = None
 
     for relative, opcode, size, time, flags, args in instructions:
-        del size
-
-        if relative in targets:
-            lines.append(f'        ::L{relative}::')
+        del relative, size
 
         if time != current_time:
             lines.append(f'        s:at({time})')
@@ -163,6 +175,15 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
 
         if opcode in EXITS:
             lines.append(f'        s:{method_name(name)}()')
+            continue
+
+        # An interrupt label marks a place the stream can be resumed from. The Lua label is what
+        # the entry dispatch jumps to; the call beside it is what running the stream records, so
+        # that a run of the stream reports the same instructions the binary holds.
+        if opcode == INTERRUPT_LABEL:
+            value = struct.unpack('<i', struct.pack('<I', args[0]))[0] if args else 0
+            lines.append(f'        ::{label_name(value)}::')
+            lines.append(f'        s:LABEL({value})')
             continue
 
         rendered = []

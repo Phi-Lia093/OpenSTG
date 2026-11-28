@@ -82,6 +82,22 @@ static int record(lua_State *L, const char *name, int time)
    so the stream runs in one pass. That is enough to check that running the Lua produces the
    same instructions in the same order, which is what this tool is for -- the timing itself is
    checked by playing the game. */
+/* LABEL(n): records and returns. The recorder has no interrupts and only wants the instruction
+   sequence; waiting here would stop every stream at its first label. */
+static int l_label(lua_State *L)
+{
+    record(L, "LABEL", 0);
+    return 0;
+}
+
+/* entry(): the point the stream is entered at. The recorder always starts at the top, so every
+   stream is compared from its beginning; an interrupt would enter it part way. */
+static int l_entry(lua_State *L)
+{
+    lua_pushinteger(L, 0);
+    return 1;
+}
+
 static int l_at(lua_State *L)
 {
     const int requested = (int)luaL_checkinteger(L, 2);
@@ -125,7 +141,7 @@ static const char *kNames[] = {
     "SET_TRANSLATION", "SET_SCALE", "SET_ALPHA", "SET_COLOR", "FLIP_X", "FLIP_Y",
     "SET_ROTATION", "SET_ANGLE_VEL", "SET_SCALE_SPEED", "FADE", "SET_BLEND",
     "POS_TIME_LINEAR", "POS_TIME_DECEL", "POS_TIME_ACCEL", "STOP", "INTERRUPT_LABEL",
-    "NOP22", "STOP_HIDE", "SET_USE_OFFSET", "SET_AUTO_ROTATE", "SET_SCROLL_POS_X",
+    "NOP22", "LABEL", "STOP_HIDE", "SET_USE_OFFSET", "SET_AUTO_ROTATE", "SET_SCROLL_POS_X",
     "SET_SCROLL_POS_Y", "SET_VISIBILITY", "INTERP_SCALE", "SET_ZWRITE_DISABLE",
     "SET_CAMERA_MODE", "INTERP_POS", "INTERP_COLOR", "INTERP_ALPHA", "INTERP_ROTATE",
     "INTERP_SCALE_2", "MOV", "MOV_FLOAT", "ADD", "ADD_FLOAT", "SUB", "SUB_FLOAT", "MUL",
@@ -174,6 +190,10 @@ static int run_stream(lua_State *L, int entry, int stream, int budget)
     lua_newtable(thread);
     lua_pushcfunction(thread, l_at);
     lua_setfield(thread, -2, "at");
+    lua_pushcfunction(thread, l_entry);
+    lua_setfield(thread, -2, "entry");
+    lua_pushcfunction(thread, l_label);
+    lua_setfield(thread, -2, "LABEL");
     for (int i = 0; kNames[i]; i++)
     {
         set_method(thread, lua_gettop(thread), kNames[i]);
@@ -362,7 +382,11 @@ def main() -> int:
                         continue
                     produced.append(parts[0])
 
-                wanted_names = [names.get(opcode, f'OP{opcode}') for opcode, _ in wanted]
+                # The generator calls the interrupt label LABEL, because in Lua it is where the
+                # script waits rather than an instruction it runs; the opcode is the same one.
+                wanted_names = [('LABEL' if names.get(opcode) == 'INTERRUPT_LABEL'
+                                 else names.get(opcode, f'OP{opcode}'))
+                                for opcode, _ in wanted]
 
                 if produced != wanted_names:
                     difference = next((i for i, (a, b) in enumerate(zip(wanted_names,

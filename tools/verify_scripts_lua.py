@@ -36,7 +36,7 @@ JUMP_OPCODE = 4
 
 CALL = re.compile(r'^s:(\w+)\((.*)\)$')
 AT = re.compile(r'^s:at\((-?\d+)\)$')
-LABEL = re.compile(r'^::L(\d+)::$')
+LABEL = re.compile(r'^::L(m?\d+)::$')
 GOTO = re.compile(r'^goto L(\d+)$')
 
 # One entry's block: from `[N] = {` at two-space indent to the matching `  },`.
@@ -53,6 +53,9 @@ def opcode_numbers() -> dict[str, int]:
     # The generator renames the two opcodes with no enumerator.
     numbers['NOP22'] = 22
     numbers['NOP'] = 0
+    # The generator writes an interrupt label as s:LABEL(n), because the label is where a script
+    # waits rather than an instruction it executes.
+    numbers['LABEL'] = 21
     return numbers
 
 
@@ -77,11 +80,20 @@ def lua_stream(body: str, numbers: dict[str, int]) -> tuple[list[tuple[int, int]
         line = raw.strip()
         if not line:
             continue
+
+        # The entry dispatch at the top of every stream is not an instruction. It reads the
+        # entry point and jumps to a label, which is how an interrupt resumes a stream; the
+        # jumps it takes are not JUMP instructions and must not be counted as any.
+        if line.startswith('local at = ') or line.startswith('if at == '):
+            continue
+
         match = AT.match(line)
         if match:
             time = int(match.group(1))
             continue
         if LABEL.match(line):
+            # The Lua label is where the entry dispatch jumps to. The s:LABEL call beside it is
+            # what running the stream reports, so that is counted and this is not.
             continue
         if GOTO.match(line):
             out.append((time, JUMP_OPCODE))

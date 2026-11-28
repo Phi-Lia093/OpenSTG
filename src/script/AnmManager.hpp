@@ -429,6 +429,20 @@ struct AnmManager
     AnmVm vm;
     GfxTextureHandle textures[MAX_TEXTURES];
     void *imageDataArray[256];
+    // What each script slot names, filled as animations load.
+    //
+    // scripts[] is indexed by a stream's number plus the animation's offset, which is what a VM's
+    // anmFileIdx is -- a different space from anmFiles, which is indexed by the texture slot.
+    // Starting a stream through Lua needs the animation's name, its entry and its stream, and
+    // none of those can be recovered from the slot number alone.
+    struct ScriptOrigin
+    {
+        char anmName[64];
+        i32 entryIndex;
+        i32 streamIndex;
+    };
+    ScriptOrigin scriptOrigins[MAX_SCRIPTS_SPRITES];
+
     char *textureNames[MAX_TEXTURES];
     // Storage for the names above. They used to point into the loaded animation, so they died
     // with it; the description they come from is only alive for the duration of the load, so

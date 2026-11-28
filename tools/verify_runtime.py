@@ -69,7 +69,41 @@ static int record(lua_State *L, const char *name, int time)
         luaL_error(L, "budget exhausted after %d instructions", g_count);
         return 0;
     }
-    printf("%s %d\n", name, time);
+
+    /* The arguments go out as 32-bit words, which is what an instruction stores. A Lua integer
+       becomes its int word and a Lua float its float word -- the same choice the runtime makes,
+       and the reason a float written without a decimal point used to arrive as an int. Comparing
+       the word compares exactly what the interpreter would read, without needing to know which
+       type each opcode uses. */
+    printf("%s %d", name, time);
+    for (int index = 2; index <= lua_gettop(L); index++)
+    {
+        if (lua_isinteger(L, index))
+        {
+            const unsigned int word = (unsigned int)(long long)lua_tointeger(L, index);
+            printf(" %08x", word);
+        }
+        else if (lua_isnumber(L, index))
+        {
+            const float value = (float)lua_tonumber(L, index);
+            unsigned int word = 0;
+            memcpy(&word, &value, sizeof(word));
+            printf(" %08x", word);
+        }
+        else if (lua_istable(L, index))
+        {
+            /* A register reference: the word is the register's number. */
+            lua_getfield(L, index, "r");
+            const unsigned int word = (unsigned int)(long long)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+            printf(" R%08x", word);
+        }
+        else
+        {
+            printf(" ?");
+        }
+    }
+    printf("\n");
     fflush(stdout);
     g_count++;
     g_remaining--;
@@ -117,14 +151,15 @@ static int l_instruction(lua_State *L)
 {
     const char *name = lua_tostring(L, lua_upvalueindex(1));
 
-    /* A jump also sets the clock, which is what makes a looping stream wait again on its next
-       pass. Recording the instruction and taking the clock from its second argument matches
-       what the interpreter does. */
-    if (name && strcmp(name, "JUMP") == 0 && lua_gettop(L) >= 2)
+    /* The instruction is recorded at the clock it ran at, and only then may it change the clock.
+       A JUMP carries the time the stream continues at, so updating first would label the jump
+       itself with the time it jumps to rather than the time it was executed. */
+    const int at = g_clock;
+    if (name && strcmp(name, "JUMP") == 0 && lua_gettop(L) >= 3)
     {
         g_clock = (int)lua_tointeger(L, 3);
     }
-    return record(L, name ? name : "?", g_clock);
+    return record(L, name ? name : "?", at);
 }
 
 /* Registers `fn` under `name`, with `name` as its single upvalue. Pushing the name and then the
@@ -305,10 +340,14 @@ def build() -> Path | None:
     return exe
 
 
-def expected_streams(directory: Path, entry: int) -> list[list[tuple[int, int]]]:
-    """The instructions the binary holds for each stream of one entry."""
+def expected_streams(directory: Path, entry: int) -> list[list[tuple[int, int, list[int]]]]:
+    """The instructions the binary holds for each stream of one entry.
+
+    Each is (opcode, time, argument words). The words are what the instruction stores, which is
+    what the recorder prints for the Lua side, so the two compare directly.
+    """
     script_file = directory / f'scripts_{entry}.bin'
-    animation = (directory / 'animation.lua')
+    animation = directory / 'animation.lua'
     if not script_file.is_file() or not animation.is_file():
         return []
 
@@ -332,8 +371,18 @@ def expected_streams(directory: Path, entry: int) -> list[list[tuple[int, int]]]
         position = start
         while position + 8 <= len(data):
             opcode, size, time, flags = struct.unpack_from('<hHhH', data, position)
-            del flags
-            stream.append((opcode, time))
+            count = max(0, size // 4 - 2)
+            if position + 8 + count * 4 > len(data):
+                break
+            words = list(struct.unpack_from(f'<{count}I', data, position + 8))
+
+            # A register argument is marked in the flags field; the recorder prints those with a
+            # leading R so the two cannot be confused with a value that happens to be the same.
+            rendered = []
+            for index, word in enumerate(words):
+                rendered.append(word)
+
+            stream.append((opcode, time, rendered, flags))
             if opcode in EXITS or size < 8:
                 break
             position += size
@@ -375,27 +424,53 @@ def main() -> int:
                                     f'{run.stderr.strip()[:100]}')
                     continue
 
-                produced = []
-                for line in run.stdout.splitlines():
-                    parts = line.split()
-                    if len(parts) != 2:
-                        continue
-                    produced.append(parts[0])
+                # Each recorded line is the name, the clock, then one word per argument.
+                produced = [line.split() for line in run.stdout.splitlines() if line.split()]
 
                 # The generator calls the interrupt label LABEL, because in Lua it is where the
                 # script waits rather than an instruction it runs; the opcode is the same one.
-                wanted_names = [('LABEL' if names.get(opcode) == 'INTERRUPT_LABEL'
-                                 else names.get(opcode, f'OP{opcode}'))
-                                for opcode, _ in wanted]
+                if len(produced) != len(wanted):
+                    problems.append(f'{directory.name} entry {entry} stream {index}: '
+                                    f'{len(wanted)} instructions in the binary, '
+                                    f'{len(produced)} from the runtime')
+                    continue
 
-                if produced != wanted_names:
-                    difference = next((i for i, (a, b) in enumerate(zip(wanted_names,
-                                                                        produced))
-                                       if a != b), min(len(wanted_names), len(produced)))
-                    problems.append(
-                        f'{directory.name} entry {entry} stream {index}: instruction '
-                        f'{difference} is {wanted_names[difference:][:1]} in the binary '
-                        f'but {produced[difference:][:1]} from the runtime')
+                mismatch = None
+                for position, ((opcode, time, words, flags), line) in enumerate(
+                        zip(wanted, produced)):
+                    expected_name = ('LABEL' if names.get(opcode) == 'INTERRUPT_LABEL'
+                                     else names.get(opcode, f'OP{opcode}'))
+                    if line[0] != expected_name:
+                        mismatch = (position, f'opcode {expected_name} vs {line[0]}')
+                        break
+                    # The clock is not compared here. tools/verify_scripts_lua.py checks it
+                    # against the binary directly, reading each at(t) and each instruction's time
+                    # field; the recorder advances a clock of its own to drive the stream, and
+                    # the two schedules are not the same thing. Comparing them here reported
+                    # differences that were an artefact of the recorder.
+
+                    if len(line) - 2 != len(words):
+                        mismatch = (position, f'{len(words)} arguments vs {len(line) - 2}')
+                        break
+
+                    for argument, word in enumerate(words):
+                        # A register argument is printed with a leading R; anything else is a
+                        # plain word. They are compared as printed, so a value that happens to
+                        # equal a register number cannot pass as one.
+                        is_register = (flags >> argument) & 1
+                        expected_word = (f'R{word:08x}' if is_register else f'{word:08x}')
+                        if line[2 + argument] != expected_word:
+                            mismatch = (position,
+                                        f'argument {argument} {expected_word} vs '
+                                        f'{line[2 + argument]}')
+                            break
+                    if mismatch:
+                        break
+
+                if mismatch:
+                    position, detail = mismatch
+                    problems.append(f'{directory.name} entry {entry} stream {index} '
+                                    f'instruction {position}: {detail}')
                     continue
                 checked += 1
 

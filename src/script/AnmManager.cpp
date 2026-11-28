@@ -19,6 +19,7 @@
 #include "core/utils.hpp"
 #include "script/AnmEntryFile.hpp"
 #include "script/AnmOp.hpp"
+#include "script/AnmScript.hpp"
 #include "script/AnmVmDebug.hpp"
 #include "script/AnmScripts.hpp"
 
@@ -333,6 +334,24 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
         this->scripts[script.index + spriteIdxOffset] =
             (AnmRawInstr *)(scriptData + script.offset);
         this->spriteIndices[script.index + spriteIdxOffset] = spriteIdxOffset;
+
+        // What this slot names. The Lua form is keyed by animation, entry and stream, none of
+        // which can be recovered from the slot later: the slot is a number, and by the time a VM
+        // starts a different animation may have been loaded.
+        const i32 globalSlot = script.index + spriteIdxOffset;
+        if (globalSlot >= 0 && globalSlot < ARRAY_SIZE_SIGNED(this->scriptOrigins))
+        {
+            strncpy(this->scriptOrigins[globalSlot].anmName, this->currentAnmName,
+                    sizeof(this->scriptOrigins[0].anmName) - 1);
+            this->scriptOrigins[globalSlot]
+                .anmName[sizeof(this->scriptOrigins[0].anmName) - 1] = '\0';
+            this->scriptOrigins[globalSlot].entryIndex = entryIndex;
+            // The position in the list, not the index: the index is a slot number and can be
+            // negative -- title01's later entries use negative indices to place their streams
+            // just after the earlier entries -- while the Lua table keys its functions by
+            // position, in the order they appear.
+            this->scriptOrigins[globalSlot].streamIndex = scriptIdx;
+        }
     }
 
     this->anmFiles[textureIdx].scriptData = scriptData;
@@ -486,6 +505,34 @@ void AnmManager::SetAndExecuteScript(AnmVm *vm, AnmRawInstr *beginningOfScript)
         vm->currentInstruction = vm->beginningOfScript;
         vm->currentTimeInScript = 0;
         vm->visible = 0;
+
+        // The Lua form needs the animation, the entry and the stream, none of which can be
+        // recovered from the slot number alone; the loader recorded them when the animation was
+        // loaded, and this is where a VM asks for the stream its slot names.
+        if (vm->anmFileIdx >= 0 && vm->anmFileIdx < ARRAY_SIZE_SIGNED(this->scriptOrigins))
+        {
+            const ScriptOrigin &origin = this->scriptOrigins[vm->anmFileIdx];
+            if (vm->anmFileIdx >= 0x900 && vm->anmFileIdx < 0x910)
+            {
+                // What the record holds for the menu's first slots. A blank name means the
+                // loader never wrote it, and the Lua path is then never even considered.
+                AnmVmDebug::Note("slot %d origin '%s' entry %d stream %d",
+                                 (int)vm->anmFileIdx, origin.anmName,
+                                 (int)origin.entryIndex, (int)origin.streamIndex);
+            }
+            if (origin.anmName[0] != '\0' && AnmScript::ShouldUseLua(vm->anmFileIdx))
+            {
+                AnmVmDebug::Note("slot %d wants Lua: %s entry %d stream %d",
+                                 (int)vm->anmFileIdx, origin.anmName,
+                                 (int)origin.entryIndex, (int)origin.streamIndex);
+                if (!AnmScript::Start(vm, origin.anmName, origin.entryIndex, origin.streamIndex))
+                {
+                    AnmVmDebug::Note("cannot start %s entry %d stream %d", origin.anmName,
+                                     (int)origin.entryIndex, (int)origin.streamIndex);
+                }
+            }
+        }
+
         ExecuteScript(vm);
         vm->UpdatePrev();
         this->scriptsExecutedThisFrame++;
@@ -1452,6 +1499,27 @@ i32 AnmManager::ExecuteScript(AnmVm *vm)
     if (g_SuppressAnmAdvance)
     {
         return 0;
+    }
+
+    // A VM whose slot runs through Lua takes that path for the whole frame: the coroutine holds
+    // the position, at(t) holds the time comparison, and AnmOp::Run is reached from the runtime.
+    // Everything after the instruction stream -- the interpolation update at `stop:` -- still
+    // runs, because it is the same for both forms.
+    if (AnmScript::HasCoroutine(vm))
+    {
+        // Recorded before and after: a VM that enters here and never reaches the dump below is
+        // stuck in the runtime rather than in the per-frame update.
+        AnmVmDebug::Note("slot %d takes the Lua path at t=%u", (int)vm->anmFileIdx,
+                         (unsigned)vm->currentTimeInScript.GetCurrent());
+        const i32 ended = AnmScript::Run(vm, (i32)vm->currentTimeInScript.GetCurrent());
+        AnmVmDebug::Note("slot %d Lua returned %d at t=%u", (int)vm->anmFileIdx, (int)ended,
+                         (unsigned)vm->currentTimeInScript.GetCurrent());
+        if (ended)
+        {
+            vm->currentInstruction = NULL;
+            return 1;
+        }
+        goto stop;
     }
 
     if (vm->pendingInterrupt != 0)

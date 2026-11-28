@@ -182,7 +182,6 @@ struct AnmManager
     // This was the `handle_interrupt:` label, which both STOP and the check before the loop
     // jumped to. It returns what the caller should do next as an int: 1 when it found its
     // label and the loop should continue from there, 0 when there is nowhere to go.
-    i32 HandleInterrupt(AnmVm *vm);
 
     void Flush();
     // `entryIndex` is which entry of the file this is, needed to find its sprite table: that

@@ -1406,47 +1406,6 @@ void AnmManager::StartPositionInterp(AnmVm *vm, const AnmRawInstr *instr, i32 ea
 }
 
 
-i32 AnmManager::HandleInterrupt(AnmVm *vm)
-{
-    AnmRawInstr *instr;
-    AnmRawInstr *nextInstr;
-
-    // The interrupt scan: from the beginning of the script, find the label number the pending
-    // interrupt names. A label numbered -1 is remembered as a fallback for a script that has
-    // no matching label, and ANM_EXIT_HIDE ends the search.
-    nextInstr = NULL;
-    instr = vm->beginningOfScript;
-    while ((instr->opcode != ANM_INTERRUPT_LABEL ||
-            (i32)vm->pendingInterrupt != instr->args[0].i) &&
-           instr->opcode != ANM_EXIT_HIDE)
-    {
-        if (instr->opcode == ANM_INTERRUPT_LABEL && instr->args[0].i == -1)
-        {
-            nextInstr = instr;
-        }
-        instr = (AnmRawInstr *)((u8 *)instr + instr->size);
-    }
-
-    vm->pendingInterrupt = 0;
-    vm->isStopped = 0;
-
-    if (instr->opcode != ANM_INTERRUPT_LABEL)
-    {
-        if (!nextInstr)
-        {
-            // Nothing to jump to: the frame ends here, as `goto stop` did.
-            vm->currentTimeInScript--;
-            return 0;
-        }
-        instr = nextInstr;
-    }
-
-    instr = (AnmRawInstr *)((u8 *)instr + instr->size);
-    vm->currentInstruction = instr;
-    vm->currentTimeInScript = vm->currentInstruction->time;
-    vm->visible = 1;
-    return 1;
-}
 
 
 i32 AnmManager::ExecuteScript(AnmVm *vm)

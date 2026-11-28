@@ -530,22 +530,18 @@ OpResult Run(AnmVm *vm, const AnmRawInstr *instr)
     case ANM_STOP_HIDE:
         vm->visible = 0;
         // Falls into STOP, as it did in the original.
-        if (!vm->pendingInterrupt)
-        {
-            vm->isStopped = 1;
-            vm->currentTimeInScript--;
-            return OpResult::EndFrame;
-        }
-        return g_AnmManager->HandleInterrupt(vm) ? OpResult::Restart : OpResult::EndFrame;
+        vm->isStopped = 1;
+        vm->currentTimeInScript--;
+        // The interrupt is left for whoever runs the stream. HandleInterrupt scanned the
+        // instruction buffer to find a label, and there is no buffer now -- the scripts are Lua
+        // coroutines and the label is a Lua jump target. Leaving the flag set lets the runtime
+        // resume at the right label, which is the same thing the scan did.
+        return OpResult::EndFrame;
 
     case ANM_STOP:
-        if (!vm->pendingInterrupt)
-        {
-            vm->isStopped = 1;
-            vm->currentTimeInScript--;
-            return OpResult::EndFrame;
-        }
-        return g_AnmManager->HandleInterrupt(vm) ? OpResult::Restart : OpResult::EndFrame;
+        vm->isStopped = 1;
+        vm->currentTimeInScript--;
+        return OpResult::EndFrame;
 
     // INTERP_SCALE reads its arguments in a different order from INTERP_SCALE_2: the target
     // scale comes first and the duration third, where the _2 form takes duration, easing,

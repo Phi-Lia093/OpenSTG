@@ -12,6 +12,32 @@ binary produces.
 
 Abstraction comes after, on top of a layer that is already known to be correct.
 
+## Feasibility check — done
+
+Before writing any of this, the one mechanism everything rests on was tested: a Lua script,
+run once, calling C++ functions that append to a buffer.
+
+`tools/build_lua_static.py` builds Lua 5.4 from `D:/lua-5.4.7/src` into
+`.tools/static/lib/lua54-static.lib`, staging the headers beside SDL's. `lua.c` and `luac.c`
+are excluded: they are the standalone interpreter and compiler, each with its own `main`.
+
+`tools/test_lua.py` builds and runs a small program that creates a state, exposes a
+`record(opcode, time, ...)` collector, runs a script that calls it through a table method,
+and compares what was collected against what was expected. It passes, and the resulting
+executable depends on nothing but `KERNEL32.dll`, so the static-link property holds.
+
+Two facts learned from it, both now settled for the real implementation:
+
+- **C linkage is required.** Lua's headers declare their functions with C linkage only when
+  compiled as C. A C++ caller that does not wrap them in `extern "C"` gets mangled names and
+  fails to link on every symbol.
+- **The calls use a colon.** `a:record(...)` passes the script table as argument 1, so the
+  caller's arguments start at 2. The generated scripts use that form, so the offset is fixed
+  in the host rather than left to chance.
+
+`409.6` survived the Lua-to-C++ trip exactly, which matters because sprite positions go
+through this path.
+
 ## Why this shape
 
 The previous attempt failed because it tried to reinterpret the data directly into

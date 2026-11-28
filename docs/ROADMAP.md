@@ -15,7 +15,7 @@ test against.
 | 2 | i18n: text extracted, UTF-8 throughout | Medium | Planned |
 | 3 | Resolution independence | Medium | Planned |
 | 4 | Audio: new subsystem for SE and BGM | Medium | Planned |
-| 5 | Configuration: binary cfg → text | Low | Planned |
+| 5 | Configuration: binary cfg → TOML | Low | **Done** |
 | 6 | ECL: byte-code → Lua | High | Planned |
 
 Stages 1, 2 and 3 are ordered first because the later work is easier when assets are
@@ -141,24 +141,26 @@ dependency.
 
 ---
 
-## Stage 5 — Configuration
+## Stage 5 — Configuration — Done
 
 **Goal.** Replace the packed binary configuration with a readable file.
 
-**Why here.** Low risk and self-contained, but it wants the text handling from stage 2 so
-that option names can be shown in the user's language.
+**Result.** `th07.toml` replaces `th07.cfg`. Every field is named and grouped into
+`[input]`, `[game]`, `[graphics]`, `[audio]` and `[display]`; choices use words rather than
+numbers.
 
-**What exists.** `th07.cfg` is a fixed binary struct. `Supervisor::LoadConfig` validates
-every field and silently falls back to defaults if anything is wrong, which makes
-misconfiguration hard to diagnose.
+Three behaviours the old format lacked: an out-of-range value is reported and clamped
+instead of replacing every setting with defaults, a field absent from the file keeps its
+default so a partial file is valid, and a parse error names the line.
 
-**Approach.** A keyed text format (TOML or JSON) with the same fields, validated with
-clear messages, and a migration path that reads the old file once if the new one is
-absent. Unknown keys ignored, missing keys defaulted, so the file survives version changes.
+The in-memory `GameConfiguration` is untouched, so no reader or menu code changed.
 
-**Done when** settings persist across runs in the new format, the old format is read once
-for migration, and out-of-range values produce a readable message rather than a silent
-reset.
+`Toml.cpp` is a reader for the subset of TOML the file uses, since a full implementation is
+a large dependency for a settings file. `tools/test_config.py` covers parsing, error
+reporting, round-tripping and clamping without needing SDL.
+
+This was done before stage 2, out of order: the configuration is self-contained and does not
+depend on the text work.
 
 ---
 

@@ -63,6 +63,8 @@ beside the executable is used as a fallback at runtime if the build had none.
 | --- | --- |
 | `src/` | Game code: the engine, the managers for each resource type, and the graphics abstraction |
 | `src/AssetStore.cpp` | Reads the game's data files from `th07.data/` |
+| `src/ConfigFile.cpp` | Reads and writes `th07.toml` |
+| `src/Toml.cpp` | A reader for the subset of TOML the settings file uses |
 | `src/EmbeddedAssets.cpp` | Reads resources embedded in the executable; currently the text font |
 | `src/graphics/` | The renderer: `ZunGraphics` interface, its OpenGL implementation, and the Windows GL loader |
 | `src/compress/` | LZSS, used by replay and savedata files |

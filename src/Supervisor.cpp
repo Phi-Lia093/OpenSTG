@@ -13,6 +13,7 @@
 #include "Chain.hpp"
 #include "Controller.hpp"
 #include "Ending.hpp"
+#include "ConfigFile.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "GameManager.hpp"
@@ -864,77 +865,53 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
 {
     i32 bgmData[4];
     SDL_IOStream *bgm;
-    i32 bgm2Data[4];
-    SDL_IOStream *bgm2;
-    u32 *configFile;
 
+    // Start from defaults, then let the file override what it names. A missing or partly
+    // written file therefore leaves the unspecified fields at their defaults instead of
+    // resetting everything, which is what the old binary format did on any bad byte.
     memset(&g_Supervisor.cfg, 0, sizeof(GameConfiguration));
-    configFile = (u32 *)FileSystem::OpenFile(FileSystem::GetPrefPath(configFilename).c_str(), 1);
-    if (!configFile)
+    g_Supervisor.cfg.lifeCount = 2;
+    g_Supervisor.cfg.bombCount = 3;
+    g_Supervisor.cfg.colorMode16bit = 0;
+    g_Supervisor.cfg.version = 0x70002;
+    g_Supervisor.cfg.padAxisX = 600;
+    g_Supervisor.cfg.padAxisY = 600;
+    g_Supervisor.cfg.playSounds = 1;
+    g_Supervisor.cfg.defaultDifficulty = (u8)DIFF_NORMAL;
+    g_Supervisor.cfg.windowed = 0;
+    g_Supervisor.cfg.frameskipConfig = 0;
+    g_Supervisor.cfg.controllerMapping = g_ControllerMapping;
+    g_Supervisor.cfg.effectQuality = QUALITY_BEAUTIFUL;
+    g_Supervisor.cfg.slowMode = 0;
+    g_Supervisor.cfg.shotSlow = 1;
+
+    // The music mode follows what is actually on disk unless the file overrides it.
+    bgm = SDL_IOFromFile(FileSystem::GetBasePath("thbgm.dat").c_str(), "rb");
+    if (bgm)
     {
-        g_GameErrorContext.Log("コンフィグデータが見つからないので初期化しました\n");
-    init:
-        g_Supervisor.cfg.lifeCount = 2;
-        g_Supervisor.cfg.bombCount = 3;
-        g_Supervisor.cfg.colorMode16bit = 255;
-        g_Supervisor.cfg.version = 0x70002;
-        g_Supervisor.cfg.padAxisX = 600;
-        g_Supervisor.cfg.padAxisY = 600;
-        bgm2 = SDL_IOFromFile(FileSystem::GetBasePath("thbgm.dat").c_str(), "rb");
-        if (bgm2)
+        SDL_ReadIO(bgm, bgmData, 16);
+        SDL_CloseIO(bgm);
+        if (bgmData[0] != 0x5641575a || bgmData[1] != 1 || bgmData[2] != 0x700)
         {
-            SDL_ReadIO(bgm2, bgm2Data, 16);
-            SDL_CloseIO(bgm2);
-            if (bgm2Data[0] != 0x5641575a || bgm2Data[1] != 1 || bgm2Data[2] != 0x700)
-            {
-                g_GameErrorContext.Fatal("BGM データのバージョンが違います\n");
-                return ZUN_ERROR;
-            }
-            g_Supervisor.cfg.musicMode = MUSIC_WAV;
+            g_GameErrorContext.Fatal("BGM データのバージョンが違います\n");
+            return ZUN_ERROR;
         }
-        else
-        {
-            g_Supervisor.cfg.musicMode = MUSIC_MIDI;
-            Supervisor::DebugPrint("wave データが無いので、midi にします\n");
-        }
-        g_Supervisor.cfg.playSounds = 1;
-        g_Supervisor.cfg.defaultDifficulty = (u8)DIFF_NORMAL;
-        g_Supervisor.cfg.windowed = 0;
-        g_Supervisor.cfg.frameskipConfig = 0;
-        g_Supervisor.cfg.controllerMapping = g_ControllerMapping;
-        g_Supervisor.cfg.effectQuality = QUALITY_BEAUTIFUL;
-        g_Supervisor.cfg.slowMode = 0;
-        g_Supervisor.cfg.shotSlow = 1;
+        g_Supervisor.cfg.musicMode = MUSIC_WAV;
     }
     else
     {
-        g_Supervisor.cfg = *(GameConfiguration *)configFile;
-        free(configFile);
-
-        bgm = SDL_IOFromFile(FileSystem::GetBasePath("thbgm.dat").c_str(), "rb");
-        if (bgm)
-        {
-            SDL_ReadIO(bgm, bgmData, 16);
-            SDL_CloseIO(bgm);
-            if (bgmData[0] != 0x5641575a || bgmData[1] != 1 || bgmData[2] != 0x700)
-            {
-                g_GameErrorContext.Fatal("BGM データのバージョンが違います\n");
-                return ZUN_ERROR;
-            }
-        }
-        if (!(g_Supervisor.cfg.lifeCount < 5 && g_Supervisor.cfg.bombCount < 4 &&
-              g_Supervisor.cfg.colorMode16bit < 2 && g_Supervisor.cfg.musicMode < 3 &&
-              g_Supervisor.cfg.defaultDifficulty < 6 && g_Supervisor.cfg.playSounds < 2 &&
-              g_Supervisor.cfg.windowed < 2 && g_Supervisor.cfg.frameskipConfig < 3 &&
-              g_Supervisor.cfg.effectQuality < 3 && g_Supervisor.cfg.slowMode < 2 &&
-              g_Supervisor.cfg.shotSlow < 2 && g_Supervisor.cfg.version == 0x70002 &&
-              g_LastFileSize == sizeof(GameConfiguration)))
-        {
-            g_GameErrorContext.Log("コンフィグデータが異常でしたので再初期化しました\n");
-            goto init;
-        }
-        g_ControllerMapping = g_Supervisor.cfg.controllerMapping;
+        g_Supervisor.cfg.musicMode = MUSIC_MIDI;
+        Supervisor::DebugPrint("wave データが無いので、midi にします\n");
     }
+
+    if (!ConfigFile::Load(FileSystem::GetPrefPath(configFilename).c_str(),
+                          g_Supervisor.cfg))
+    {
+        // The file existed but could not be read. Defaults are already in place, and they
+        // get written back below, so the next launch starts from a valid file.
+        g_GameErrorContext.Log("コンフィグデータが異常でしたので再初期化しました\n");
+    }
+    g_ControllerMapping = g_Supervisor.cfg.controllerMapping;
     g_Supervisor.cfg.colorAddEmulation = 1;
     if (this->cfg.noVertexBuffers)
     {
@@ -997,7 +974,8 @@ ZunResult Supervisor::LoadConfig(const char *configFilename)
         g_GameErrorContext.Log("垂直同期を取りません\n");
         g_Supervisor.vsyncDisabled = TRUE;
     }
-    if (FileSystem::WriteDataToFile(configFilename, &g_Supervisor.cfg, sizeof(GameConfiguration)))
+    if (!ConfigFile::Save(FileSystem::GetPrefPath(configFilename).c_str(),
+                          g_Supervisor.cfg))
     {
         g_GameErrorContext.Fatal("ファイルが書き出せません %s\n", configFilename);
         g_GameErrorContext.Fatal("フォルダが書込み禁止属性になっているか、ディスクがいっぱいいっぱ"

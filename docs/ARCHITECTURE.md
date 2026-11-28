@@ -141,9 +141,26 @@ layout matches the original binary.
 
 ### Configuration
 
-`th07.cfg` is a packed binary struct: controller mapping, shot type, difficulty, volume
-settings and option flags. `Supervisor::LoadConfig` validates it field by field and falls
-back to defaults if anything is out of range.
+`th07.toml` holds the settings, read and written by `ConfigFile`. The original stored them
+as a 56-byte binary struct and cast the file straight into it, so any wrong byte replaced
+every setting with a default.
+
+Now each field is named, values that name a choice use words (`default_difficulty =
+"normal"`) rather than numbers, and an out-of-range value is reported and clamped instead of
+discarding the file. A field that is absent keeps its default, so a partial file is valid
+and deleting the file resets everything.
+
+The in-memory `GameConfiguration` is unchanged: only the serialization layer differs, which
+keeps the menus and every `cfg.*` reader untouched.
+
+`Toml.cpp` is a small reader for the subset of TOML the file uses — tables, comments,
+strings, integers, floats, booleans and flat arrays. Arrays of tables, inline tables,
+datetimes and multi-line strings are reported as errors rather than misread. The full TOML
+specification is far larger than a settings file needs, and a complete implementation would
+be a dependency for a fraction of its features.
+
+`tools/test_config.py` builds `Toml.cpp` and `ConfigFile.cpp` without SDL and checks
+parsing, error reporting, round-tripping and clamping.
 
 ### Text
 

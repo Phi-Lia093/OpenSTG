@@ -8,6 +8,7 @@
 #include "AnmManager.hpp"
 #include "Chain.hpp"
 #include "Controller.hpp"
+#include "ConfigFile.hpp"
 #include "FileSystem.hpp"
 #include "GameErrorContext.hpp"
 #include "GameManager.hpp"
@@ -36,7 +37,7 @@ void AnmManager::TakeScreenshotIfRequested()
 
 SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv)
 {
-    if (g_Supervisor.LoadConfig("th07.cfg") != ZUN_SUCCESS)
+    if (g_Supervisor.LoadConfig("th07.toml") != ZUN_SUCCESS)
     {
         return SDL_APP_FAILURE;
     }
@@ -184,6 +185,6 @@ void SDL_AppQuit(void *appstate, SDL_AppResult result)
         // enabling vsync since theres nothing before the checkvsync call that needs vsyncDisabled
         // to be there beforehand
     }
-    FileSystem::WriteDataToFile("th07.cfg", &g_Supervisor.cfg, sizeof(GameConfiguration));
+    ConfigFile::Save(FileSystem::GetPrefPath("th07.toml").c_str(), g_Supervisor.cfg);
     g_GameErrorContext.Flush();
 }

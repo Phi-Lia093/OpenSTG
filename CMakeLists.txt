@@ -50,6 +50,8 @@ set(SOURCES
     src/Touch.cpp
     src/main.cpp
     src/AssetStore.cpp
+    src/ConfigFile.cpp
+    src/Toml.cpp
     src/EmbeddedAssets.cpp
     src/graphics/Gles.cpp
     src/compress/Lzss.cpp

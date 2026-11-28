@@ -1,0 +1,381 @@
+# Sprite rectangles in texture pixels, as the original stores them.
+version = 2
+texture = "texture.png"
+width = 512
+height = 512
+
+[[sprite]]
+id = 0
+rect = [0, 0, 80, 32]
+
+[[sprite]]
+id = 1
+rect = [0, 64, 80, 32]
+
+[[sprite]]
+id = 2
+rect = [80, 0, 160, 32]
+
+[[sprite]]
+id = 3
+rect = [80, 64, 160, 32]
+
+[[sprite]]
+id = 4
+rect = [240, 0, 192, 32]
+
+[[sprite]]
+id = 5
+rect = [240, 64, 192, 32]
+
+[[sprite]]
+id = 6
+rect = [0, 32, 96, 32]
+
+[[sprite]]
+id = 7
+rect = [0, 96, 96, 32]
+
+[[sprite]]
+id = 8
+rect = [96, 32, 96, 32]
+
+[[sprite]]
+id = 9
+rect = [96, 96, 96, 32]
+
+[[sprite]]
+id = 10
+rect = [192, 32, 160, 32]
+
+[[sprite]]
+id = 11
+rect = [192, 96, 160, 32]
+
+[[sprite]]
+id = 12
+rect = [352, 32, 96, 32]
+
+[[sprite]]
+id = 13
+rect = [352, 96, 96, 32]
+
+[[sprite]]
+id = 14
+rect = [432, 0, 64, 32]
+
+[[sprite]]
+id = 15
+rect = [432, 64, 64, 32]
+
+[[sprite]]
+id = 16
+rect = [0, 128, 96, 32]
+
+[[sprite]]
+id = 17
+rect = [0, 192, 96, 32]
+
+[[sprite]]
+id = 18
+rect = [96, 128, 112, 32]
+
+[[sprite]]
+id = 19
+rect = [96, 192, 112, 32]
+
+[[sprite]]
+id = 20
+rect = [208, 128, 80, 32]
+
+[[sprite]]
+id = 21
+rect = [208, 192, 80, 32]
+
+[[sprite]]
+id = 22
+rect = [288, 128, 96, 32]
+
+[[sprite]]
+id = 23
+rect = [288, 192, 96, 32]
+
+[[sprite]]
+id = 24
+rect = [384, 128, 80, 32]
+
+[[sprite]]
+id = 25
+rect = [384, 192, 80, 32]
+
+[[sprite]]
+id = 26
+rect = [0, 160, 144, 32]
+
+[[sprite]]
+id = 27
+rect = [0, 224, 144, 32]
+
+[[sprite]]
+id = 28
+rect = [144, 160, 96, 32]
+
+[[sprite]]
+id = 29
+rect = [144, 224, 96, 32]
+
+[[sprite]]
+id = 30
+rect = [240, 160, 144, 32]
+
+[[sprite]]
+id = 31
+rect = [240, 224, 144, 32]
+
+[[sprite]]
+id = 32
+rect = [384, 160, 64, 32]
+
+[[sprite]]
+id = 33
+rect = [384, 224, 64, 32]
+
+[[sprite]]
+id = 34
+rect = [0, 256, 32, 32]
+
+[[sprite]]
+id = 35
+rect = [0, 320, 32, 32]
+
+[[sprite]]
+id = 36
+rect = [32, 256, 32, 32]
+
+[[sprite]]
+id = 37
+rect = [32, 320, 32, 32]
+
+[[sprite]]
+id = 38
+rect = [64, 256, 32, 32]
+
+[[sprite]]
+id = 39
+rect = [64, 320, 32, 32]
+
+[[sprite]]
+id = 40
+rect = [96, 256, 32, 32]
+
+[[sprite]]
+id = 41
+rect = [96, 320, 32, 32]
+
+[[sprite]]
+id = 42
+rect = [128, 256, 32, 32]
+
+[[sprite]]
+id = 43
+rect = [128, 320, 32, 32]
+
+[[sprite]]
+id = 44
+rect = [160, 256, 32, 32]
+
+[[sprite]]
+id = 45
+rect = [160, 320, 32, 32]
+
+[[sprite]]
+id = 46
+rect = [192, 256, 32, 32]
+
+[[sprite]]
+id = 47
+rect = [192, 320, 32, 32]
+
+[[sprite]]
+id = 48
+rect = [224, 256, 32, 32]
+
+[[sprite]]
+id = 49
+rect = [224, 320, 32, 32]
+
+[[sprite]]
+id = 50
+rect = [256, 256, 32, 32]
+
+[[sprite]]
+id = 51
+rect = [256, 320, 32, 32]
+
+[[sprite]]
+id = 52
+rect = [288, 256, 32, 32]
+
+[[sprite]]
+id = 53
+rect = [288, 320, 32, 32]
+
+[[sprite]]
+id = 54
+rect = [320, 256, 80, 32]
+
+[[sprite]]
+id = 55
+rect = [320, 320, 80, 32]
+
+[[sprite]]
+id = 56
+rect = [400, 256, 80, 32]
+
+[[sprite]]
+id = 57
+rect = [400, 320, 80, 32]
+
+[[sprite]]
+id = 58
+rect = [0, 288, 48, 32]
+
+[[sprite]]
+id = 59
+rect = [0, 352, 48, 32]
+
+[[sprite]]
+id = 60
+rect = [48, 288, 48, 32]
+
+[[sprite]]
+id = 61
+rect = [48, 352, 48, 32]
+
+[[sprite]]
+id = 62
+rect = [96, 288, 64, 32]
+
+[[sprite]]
+id = 63
+rect = [96, 352, 64, 32]
+
+[[sprite]]
+id = 64
+rect = [160, 288, 64, 32]
+
+[[sprite]]
+id = 65
+rect = [160, 352, 64, 32]
+
+[[sprite]]
+id = 66
+rect = [224, 288, 112, 32]
+
+[[sprite]]
+id = 67
+rect = [224, 352, 112, 32]
+
+[[sprite]]
+id = 68
+rect = [336, 288, 144, 32]
+
+[[sprite]]
+id = 69
+rect = [336, 352, 144, 32]
+
+[[sprite]]
+id = 70
+rect = [0, 384, 80, 32]
+
+[[sprite]]
+id = 71
+rect = [0, 448, 80, 32]
+
+[[sprite]]
+id = 72
+rect = [80, 384, 96, 32]
+
+[[sprite]]
+id = 73
+rect = [80, 448, 96, 32]
+
+[[sprite]]
+id = 74
+rect = [176, 384, 80, 32]
+
+[[sprite]]
+id = 75
+rect = [176, 448, 80, 32]
+
+[[sprite]]
+id = 76
+rect = [256, 384, 80, 32]
+
+[[sprite]]
+id = 77
+rect = [256, 448, 80, 32]
+
+[[sprite]]
+id = 78
+rect = [336, 384, 48, 32]
+
+[[sprite]]
+id = 79
+rect = [336, 448, 48, 32]
+
+[[sprite]]
+id = 80
+rect = [384, 384, 128, 32]
+
+[[sprite]]
+id = 81
+rect = [384, 448, 128, 32]
+
+[[sprite]]
+id = 82
+rect = [0, 416, 96, 32]
+
+[[sprite]]
+id = 83
+rect = [0, 480, 96, 32]
+
+[[sprite]]
+id = 84
+rect = [96, 416, 80, 32]
+
+[[sprite]]
+id = 85
+rect = [96, 480, 80, 32]
+
+[[sprite]]
+id = 86
+rect = [176, 416, 64, 32]
+
+[[sprite]]
+id = 87
+rect = [176, 480, 64, 32]
+
+[[sprite]]
+id = 88
+rect = [240, 416, 80, 32]
+
+[[sprite]]
+id = 89
+rect = [240, 480, 80, 32]
+
+[[sprite]]
+id = 90
+rect = [320, 416, 80, 32]
+
+[[sprite]]
+id = 91
+rect = [320, 480, 80, 32]
+
+[[sprite]]
+id = 92
+rect = [400, 416, 64, 32]
+
+[[sprite]]
+id = 93
+rect = [400, 480, 64, 32]

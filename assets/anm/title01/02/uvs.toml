@@ -1,0 +1,49 @@
+# Sprite rectangles in texture pixels, as the original stores them.
+version = 2
+texture = "texture.png"
+width = 512
+height = 512
+
+[[sprite]]
+id = 0
+rect = [0, 0, 256, 96]
+
+[[sprite]]
+id = 1
+rect = [256, 0, 256, 96]
+
+[[sprite]]
+id = 2
+rect = [0, 96, 256, 96]
+
+[[sprite]]
+id = 3
+rect = [256, 96, 256, 96]
+
+[[sprite]]
+id = 4
+rect = [0, 192, 256, 96]
+
+[[sprite]]
+id = 5
+rect = [256, 192, 256, 96]
+
+[[sprite]]
+id = 6
+rect = [0, 288, 256, 96]
+
+[[sprite]]
+id = 7
+rect = [256, 288, 256, 96]
+
+[[sprite]]
+id = 8
+rect = [0, 384, 256, 96]
+
+[[sprite]]
+id = 9
+rect = [256, 384, 256, 96]
+
+[[sprite]]
+id = 10
+rect = [0, 480, 256, 32]

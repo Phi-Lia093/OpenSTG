@@ -17,6 +17,7 @@
 #include "core/ZunMath.hpp"
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
+#include "script/AnmLua.hpp"
 
 AnmManager *g_AnmManager;
 
@@ -300,6 +301,62 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     i32 res;
     u32 ownsMemory;
     AnmRawEntry *entry;
+
+    // An animation converted to the new form lives in anm/<name>/ as a directory of PNG, TOML
+    // and Lua. That takes precedence over the binary file, which is how a file moves across
+    // one at a time; anything not yet converted falls through to the original format below.
+    std::string anmName = path;
+    const size_t slash = anmName.find_last_of('/');
+    if (slash != std::string::npos)
+    {
+        anmName = anmName.substr(slash + 1);
+    }
+    if (anmName.size() > 4 && anmName.compare(anmName.size() - 4, 4, ".anm") == 0)
+    {
+        anmName.resize(anmName.size() - 4);
+    }
+
+    if (AnmLua::Exists(anmName.c_str()))
+    {
+        std::string error;
+
+        // With TH07_ANM_DEBUG set, check the stream built from Lua against the original
+        // before the game uses it. The Lua is a transcription, so they must be identical;
+        // a mismatch names the first differing field rather than needing someone to judge
+        // how the animation plays.
+        if (SDL_getenv("TH07_ANM_DEBUG") &&
+            !AnmLua::VerifyAgainstBinary(anmName.c_str(), error))
+        {
+            g_GameErrorContext.Fatal("%s: %s\n", anmName.c_str(), error.c_str());
+        }
+
+        u32 builtSize = 0;
+        entry = (AnmRawEntry *)AnmLua::BuildEntries(anmName.c_str(), &builtSize, error);
+        if (!entry)
+        {
+            g_GameErrorContext.Fatal("%s: %s\n", anmName.c_str(), error.c_str());
+            return ZUN_ERROR;
+        }
+
+        i32 startIdx = anmIdx;
+        while (true)
+        {
+            res = LoadAnm(anmIdx, entry, spriteIdxOffset, 1);
+            if (res < 0)
+            {
+                this->anmFiles[startIdx].childCount = anmIdx - startIdx;
+                return res;
+            }
+            anmIdx++;
+            if (entry->nextOffset == 0)
+            {
+                this->anmFiles[startIdx].childCount = anmIdx - startIdx;
+                return ZUN_SUCCESS;
+            }
+            entry = (AnmRawEntry *)((u8 *)entry + entry->nextOffset);
+            spriteIdxOffset = spriteIdxOffset + res;
+        }
+    }
 
     entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
     ownsMemory = 1;

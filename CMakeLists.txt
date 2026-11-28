@@ -42,6 +42,7 @@ set(SOURCES
     src/main.cpp
     src/render/GL.cpp
     src/script/AnmManager.cpp
+    src/script/AnmLua.cpp
     src/script/AnmVm.cpp
     src/script/EclManager.cpp
     src/script/EnemyEclInstr.cpp
@@ -100,6 +101,11 @@ if(NOT EXISTS "${SDL_STATIC_ROOT}/lib/SDL3-static.lib")
         "static SDL libraries not found in ${SDL_STATIC_ROOT}.\n"
         "Run: python tools/build_sdl_static.py")
 endif()
+if(NOT EXISTS "${SDL_STATIC_ROOT}/lib/lua54-static.lib")
+    message(FATAL_ERROR
+        "static Lua library not found in ${SDL_STATIC_ROOT}.\n"
+        "Run: python tools/build_lua_static.py")
+endif()
 
 target_include_directories(th07 PRIVATE src "${SDL_STATIC_ROOT}/include")
 
@@ -119,6 +125,7 @@ target_link_libraries(th07 PRIVATE
     SDL3_ttf-static.lib
     SDL3_image-static.lib
     SDL3-static.lib
+    lua54-static.lib
     OpenGL::GL
     # Win32 libraries SDL3 and FreeType reference when built statically.
     winmm.lib

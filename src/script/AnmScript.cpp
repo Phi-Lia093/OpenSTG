@@ -502,13 +502,26 @@ bool Exists(const char *anmName)
 
 bool ShouldUseLua(i32 slot)
 {
-    // TH07_ANM_LUA_SLOT names one slot, TH07_ANM_LUA_FIRST and _LAST a range, and
-    // TH07_ANM_LUA_ALL every slot. The last is what makes a full switch testable: with it, every
-    // stream runs through the runtime and the dump says whether any of them behaves differently.
+    // Lua is the path the game takes. The switches go the other way, to the binary form or to a
+    // subset of slots, because the two can then be compared on the same machine:
     //
-    // Lua is not the default yet. Turning it on by default was tried and the title screen came up
-    // with only its large lettering: the difference from running with TH07_ANM_LUA_ALL set is the
-    // thing to find, not something to work around by changing which path is default.
+    //   TH07_ANM_LUA_OFF=1        every slot takes the binary path
+    //   TH07_ANM_LUA_SLOT=n       only slot n does
+    //   TH07_ANM_LUA_FIRST/_LAST  only that range does
+    //
+    // The binary form stays in the build because an animation that has not been converted still
+    // loads from it, and because a difference between the two is easier to find when both can be
+    // run. TH07_ANM_LUA_ALL is no longer needed and is ignored.
+    static const bool off = [] {
+        const char *value = SDL_getenv("TH07_ANM_LUA_OFF");
+        return value != nullptr && value[0] == '1';
+    }();
+
+    if (off)
+    {
+        return false;
+    }
+
     static const i32 first = [] {
         const char *value = SDL_getenv("TH07_ANM_LUA_FIRST");
         if (!value)
@@ -527,16 +540,12 @@ bool ShouldUseLua(i32 slot)
         return value ? (i32)atoi(value) : -1;
     }();
 
-    static const bool all = [] {
-        const char *value = SDL_getenv("TH07_ANM_LUA_ALL");
-        return value != nullptr && value[0] == '1';
-    }();
-
-    if (all)
+    if (first >= 0)
     {
-        return true;
+        return slot >= first && slot <= last;
     }
-    return first >= 0 && slot >= first && slot <= last;
+
+    return true;
 }
 
 bool Start(AnmVm *vm, const char *anmName, i32 entryIndex, i32 scriptIndex)

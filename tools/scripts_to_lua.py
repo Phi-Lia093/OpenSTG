@@ -169,7 +169,11 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
         float_args = floats.get(name, set())
         for index, raw in enumerate(args):
             if flags & (1 << index):
-                rendered.append(f'r({raw})')
+                # A register reference. The instruction's flags bit says this argument names a
+                # register rather than carrying a value, and a plain number cannot say that --
+                # r(10008) would be an undefined global, which is what an earlier version
+                # generated and what made every stream using a register fail at run time.
+                rendered.append(f'{{r = {raw}}}')
             elif name in BYTE_ARGUMENT and index == 1:
                 rendered.append(str(raw & 0xFF))
             else:
@@ -179,12 +183,15 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
         call += ', '.join(rendered)
         call += ')'
 
-        # A jump whose only argument is the target is clearer as a jump than as a call that
-        # has to be decoded to see where it goes.
-        if opcode == JUMP and len(args) == 2 and not (flags & 0b11):
-            lines.append(f'        goto L{args[0]}')
-            continue
-
+        # A jump carries two things: where it goes and what the clock becomes. Writing it as a
+        # bare `goto` loses the second, and that is not a cosmetic loss -- the stream at
+        # eff01's entry 0 jumps back with time 0, so the clock restarts and the at(1) on the
+        # next pass waits again. Without the reset the clock is already past, at(1) returns at
+        # once, and the stream spins for ever.
+        #
+        # So the jump stays a call, with both arguments, and the runtime sets the clock and
+        # then moves. A `goto` would have to be paired with a separate clock reset, and two
+        # statements that must stay together are easy to separate by accident.
         lines.append(call)
 
     if not lines:

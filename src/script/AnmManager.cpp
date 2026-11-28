@@ -1342,6 +1342,44 @@ i32 *AnmVm::GetVar(i32 *paramId, u16 mask, u32 idx)
     }
 }
 
+void AnmManager::JumpConditional(AnmVm *vm, const AnmRawInstr *instr)
+{
+    // The twelve conditional jumps carry (value, value, target, time) and land here when the
+    // comparison succeeds. The body was the `jump:` label inside ExecuteScript.
+    vm->currentTimeInScript = instr->args[3].i;
+    vm->currentInstruction =
+        (AnmRawInstr *)((u8 *)vm->beginningOfScript + instr->args[2].i);
+}
+
+void AnmManager::StartPositionInterp(AnmVm *vm, const AnmRawInstr *instr, i32 easeMode)
+{
+    // The three POS_TIME_* opcodes set their easing and then run this. The body was the
+    // `interp_pos:` label inside ExecuteScript.
+    vm->easeModes[0] = (i8)easeMode;
+
+    if (!vm->useOffset)
+    {
+        vm->posInterpInitial = vm->pos;
+    }
+    else
+    {
+        vm->posInterpInitial = vm->offset;
+    }
+
+    vm->posInterpFinal = ZunVec3(
+        ((instr->flags & (1 << 0)) != 0) ? vm->GetFloatVarValue(instr->args[0].f)
+                                         : instr->args[0].f,
+        ((instr->flags & (1 << 1)) != 0) ? vm->GetFloatVarValue(instr->args[1].f)
+                                         : instr->args[1].f,
+        ((instr->flags & (1 << 2)) != 0) ? vm->GetFloatVarValue(instr->args[2].f)
+                                         : instr->args[2].f);
+    vm->interpEndTimes[0] =
+        ((instr->flags & (1 << 3)) != 0) ? vm->GetVarValue(instr->args[3].i)
+                                         : instr->args[3].i;
+    vm->interpStartTimes[0] = 0;
+}
+
+
 i32 AnmManager::ExecuteScript(AnmVm *vm)
 {
     AnmRawInstr *instr;
@@ -1478,27 +1516,16 @@ WHY_NOT_JUST_CONTINUE:
             break;
         case ANM_POS_TIME_ACCEL:
             vm->easeModes[0] = 6;
-            goto interp_pos;
+            StartPositionInterp(vm, instr, vm->easeModes[0]);
+            break;
         case ANM_POS_TIME_DECEL:
             vm->easeModes[0] = 4;
-            goto interp_pos;
+            StartPositionInterp(vm, instr, vm->easeModes[0]);
+            break;
         case ANM_POS_TIME_LINEAR:
             vm->easeModes[0] = 0;
-        interp_pos:
-            if (!vm->useOffset)
-            {
-                vm->posInterpInitial = vm->pos;
-            }
-            else
-            {
-                vm->posInterpInitial = vm->offset;
-            }
-            vm->posInterpFinal =
-                ZunVec3(GET_FLOAT_VALUE(0), GET_FLOAT_VALUE(1), GET_FLOAT_VALUE(2));
-            vm->interpEndTimes[0] = GET_INT_VALUE(3);
-            vm->interpStartTimes[0] = 0;
-            break;
-        case ANM_WAIT:
+            StartPositionInterp(vm, instr, 0);
+            break;case ANM_WAIT:
             if (vm->waitTimer == 0)
             {
                 vm->waitTimer = GET_INT_VALUE(0);
@@ -1748,80 +1775,87 @@ WHY_NOT_JUST_CONTINUE:
         case ANM_JUMP_IF_EQ:
             if (GET_INT_VALUE(0) == GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_EQ_FLOAT:
             if (GET_FLOAT_VALUE(0) == GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_NEQ:
             if (GET_INT_VALUE(0) != GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_NEQ_FLOAT:
             if (GET_FLOAT_VALUE(0) != GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_LT:
             if (GET_INT_VALUE(0) < GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_LT_FLOAT:
             if (GET_FLOAT_VALUE(0) < GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_LEQ:
             if (GET_INT_VALUE(0) <= GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_LEQ_FLOAT:
             if (GET_FLOAT_VALUE(0) <= GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_GT:
             if (GET_INT_VALUE(0) > GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_GT_FLOAT:
             if (GET_FLOAT_VALUE(0) > GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_GEQ:
             if (GET_INT_VALUE(0) >= GET_INT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
         case ANM_JUMP_IF_GEQ_FLOAT:
             if (GET_FLOAT_VALUE(0) >= GET_FLOAT_VALUE(1))
             {
-                goto jump;
+                JumpConditional(vm, instr);
+            goto WHY_NOT_JUST_CONTINUE;
             }
             break;
-        jump:
-            vm->currentTimeInScript = instr->args[3].i;
-            vm->currentInstruction =
-                (AnmRawInstr *)((u8 *)vm->beginningOfScript + instr->args[2].i);
-            goto WHY_NOT_JUST_CONTINUE;
         default:
             break;
         }

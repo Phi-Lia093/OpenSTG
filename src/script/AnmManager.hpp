@@ -166,6 +166,20 @@ struct AnmManager
     static void DrawVmTextFmt(AnmManager *manager, AnmVm *vm, u32 textColor, u32 outlineType,
                               const char *str, ...);
     i32 ExecuteScript(AnmVm *vm);
+
+    // The two pieces of ExecuteScript that several opcodes share.
+    //
+    // They were labels inside the switch that the cases jumped to with goto. A Lua method
+    // cannot jump into another function's body, so they become calls; the code they run is
+    // unchanged, and the cases that reach them differ only in what they set first.
+    //
+    // JumpTo takes the target and time from the instruction's own arguments -- args[2] and
+    // args[3] -- which is where all twelve conditional jumps carry them.
+    void JumpConditional(AnmVm *vm, const AnmRawInstr *instr);
+    // StartPositionInterp starts a position interpolation with the given easing; the three
+    // POS_TIME_* opcodes differ only in that number.
+    void StartPositionInterp(AnmVm *vm, const AnmRawInstr *instr, i32 easeMode);
+
     void Flush();
     // `entryIndex` is which entry of the file this is, needed to find its sprite table: that
     // table is a TOML file beside the animation rather than a region inside it.

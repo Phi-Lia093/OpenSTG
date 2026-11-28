@@ -207,7 +207,11 @@ struct AnmManager
     void ReleaseVertexBuffer();
     void ResetVertexBuffer();
     ZunResult SetActiveSprite(AnmVm *vm, i32 spriteIdx);
-    void SetAndExecuteScript(AnmVm *vm, AnmRawInstr *beginningOfScript);
+    // Starts the stream a slot names, if it names one. Whether it does is answered by the record
+    // the loader made, not by a pointer into a buffer: the instructions are Lua functions now,
+    // reached by slot, so there is no buffer, and a null one still forms a pointer that reads as
+    // "this slot has a script" when it has none.
+    void SetAndExecuteScript(AnmVm *vm, bool hasScript);
     void SetRenderStateForVm(AnmVm *vm);
     void SetupVertexBuffer();
     void SyncRenderState(AnmVm *vm);
@@ -229,7 +233,16 @@ struct AnmManager
         vm->offset = ZunVec3(0.0f, 0.0f, 0.0f);
         vm->fontHeight = 15;
         vm->fontWidth = 15;
-        SetAndExecuteScript(vm, this->scripts[anmFileIdx]);
+
+        // Whether this slot holds a stream is answered by the record made when the animation
+        // loaded, not by a pointer into a buffer. The instructions are Lua functions now, reached
+        // by slot, so there is no buffer to point into -- and a null one would still produce a
+        // pointer, which reads as "this slot has a script" when it has none.
+        const bool hasScript =
+            anmFileIdx >= 0 && anmFileIdx < ARRAY_SIZE_SIGNED(scriptOrigins) &&
+            scriptOrigins[anmFileIdx].anmName[0] != '\0';
+
+        SetAndExecuteScript(vm, hasScript);
     }
 
     void ReleaseSurfaces()
@@ -264,7 +277,10 @@ struct AnmManager
     void SetAnmIdxAndExecuteScript(AnmVm *vm, i32 anmIdx)
     {
         vm->anmFileIdx = anmIdx;
-        this->SetAndExecuteScript(vm, this->scripts[anmIdx]);
+        const bool hasScript =
+            anmIdx >= 0 && anmIdx < ARRAY_SIZE_SIGNED(scriptOrigins) &&
+            scriptOrigins[anmIdx].anmName[0] != '\0';
+        this->SetAndExecuteScript(vm, hasScript);
     }
 
     void InitializeAndSetActiveSprite(AnmVm *vm, i32 spriteIdx)

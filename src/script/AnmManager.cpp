@@ -304,19 +304,16 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
         LoadSprite(rawSprite.id + spriteIdxOffset, &loadedSprite);
     }
 
-    // The streams are a file of their own, and the description says where each begins in it.
-    // The pointer is kept on the entry so ReleaseAnm can free it: it is read every frame.
+    // The streams are no longer read from a file of their own: each animation's instructions are
+    // the Lua functions in its animation.lua, and a VM reaches them by the slot its entry gives
+    // it. What is still needed here is only which slot each stream occupies, which the
+    // description holds. A missing scripts_N.bin is therefore not an error -- it is not read.
     u32 scriptSize = 0;
     std::string scriptError;
     u8 *scriptData = nullptr;
     if (!description.scripts.empty())
     {
         scriptData = AnmScripts::Load(this->currentAnmName, entryIndex, &scriptSize, scriptError);
-        if (!scriptData)
-        {
-            g_GameErrorContext.Fatal("スクリプトを読み込めません: %s\n", scriptError.c_str());
-            return ZUN_ERROR;
-        }
     }
 
     for (i32 scriptIdx = 0; scriptIdx < (i32)description.scripts.size(); scriptIdx++)
@@ -491,18 +488,24 @@ ZunResult AnmManager::SetActiveSprite(AnmVm *vm, i32 spriteIdx)
     return ZUN_SUCCESS;
 }
 
-void AnmManager::SetAndExecuteScript(AnmVm *vm, AnmRawInstr *beginningOfScript)
+void AnmManager::SetAndExecuteScript(AnmVm *vm, bool hasScript)
 {
-    if (!beginningOfScript)
+    if (!hasScript)
     {
-        memset(vm, 0, sizeof(AnmVm));
+        // Nothing to run in this slot, so the VM is cleared and draws nothing -- which is what a
+        // slot with no stream did before. Deliberately not memset: the slot number was just
+        // written to this VM and the caller still needs it.
+        vm->sprite = NULL;
+        vm->activeSpriteIdx = -1;
+        vm->visible = 0;
+        vm->currentInstruction = NULL;
     }
     else
     {
         vm->flip = 0;
         vm->Initialize();
-        vm->beginningOfScript = beginningOfScript;
-        vm->currentInstruction = vm->beginningOfScript;
+        vm->currentInstruction = (AnmRawInstr *)1;
+        vm->beginningOfScript = vm->currentInstruction;
         vm->currentTimeInScript = 0;
         vm->visible = 0;
 
@@ -512,19 +515,8 @@ void AnmManager::SetAndExecuteScript(AnmVm *vm, AnmRawInstr *beginningOfScript)
         if (vm->anmFileIdx >= 0 && vm->anmFileIdx < ARRAY_SIZE_SIGNED(this->scriptOrigins))
         {
             const ScriptOrigin &origin = this->scriptOrigins[vm->anmFileIdx];
-            if (vm->anmFileIdx >= 0x900 && vm->anmFileIdx < 0x910)
+            if (AnmScript::ShouldUseLua(vm->anmFileIdx))
             {
-                // What the record holds for the menu's first slots. A blank name means the
-                // loader never wrote it, and the Lua path is then never even considered.
-                AnmVmDebug::Note("slot %d origin '%s' entry %d stream %d",
-                                 (int)vm->anmFileIdx, origin.anmName,
-                                 (int)origin.entryIndex, (int)origin.streamIndex);
-            }
-            if (origin.anmName[0] != '\0' && AnmScript::ShouldUseLua(vm->anmFileIdx))
-            {
-                AnmVmDebug::Note("slot %d wants Lua: %s entry %d stream %d",
-                                 (int)vm->anmFileIdx, origin.anmName,
-                                 (int)origin.entryIndex, (int)origin.streamIndex);
                 if (!AnmScript::Start(vm, origin.anmName, origin.entryIndex, origin.streamIndex))
                 {
                     AnmVmDebug::Note("cannot start %s entry %d stream %d", origin.anmName,

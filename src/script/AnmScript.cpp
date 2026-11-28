@@ -208,14 +208,24 @@ int Lua_entry(lua_State *L)
     return 1;
 }
 
-// LABEL(n): an interrupt label.
+// LABEL(n, time): an interrupt label and the clock it starts at.
 //
 // The Lua label beside it is where the entry dispatch jumps to; this call is what running the
 // stream reports, so a run of the stream yields the same instruction sequence the binary holds.
-// It does not wait -- the interpreter fell through a label too, and an interrupt did the work of
-// moving the program.
+//
+// It also sets the clock, for a run that was entered here by an interrupt. The interpreter set
+// the clock to the time of the instruction after the label when it jumped; without that the
+// stream kept an older clock, its next at(t) was already satisfied, and it ran straight past the
+// STOP it should have waited at.
 int Lua_Label(lua_State *L)
 {
+    AnmVm *vm = VmOf(L);
+    if (!vm || lua_gettop(L) < 3)
+    {
+        return 0;
+    }
+    const i32 startTime = (i32)lua_tointeger(L, 3);
+    vm->currentTimeInScript = startTime;
     return 0;
 }
 
@@ -327,6 +337,41 @@ void RegisterMethods(lua_State *L, int table)
     }
 }
 
+// Whether a stream can be entered at `entry`. A stream lists its labels in its entry table, and
+// an entry of 0 means the top of the stream, which every one has.
+static bool CanEnterAt(lua_State *L, i32 scriptIndex, i32 entry)
+{
+    if (entry == 0)
+    {
+        return true;
+    }
+
+    // The entry table is on top of the stack, put there by the caller.
+    lua_getfield(L, -1, "labels");
+    if (!lua_istable(L, -1))
+    {
+        lua_pop(L, 1);
+        return false;
+    }
+    // Keyed by the stream's position, which starts at 0, the same way the stream functions are
+    // keyed. Asking for index 1 would read the second stream's labels and report the first as
+    // having none.
+    lua_geti(L, -1, scriptIndex);
+    bool found = false;
+    if (lua_istable(L, -1))
+    {
+        const int count = (int)lua_rawlen(L, -1);
+        for (int index = 1; index <= count && !found; index++)
+        {
+            lua_geti(L, -1, index);
+            found = (i32)lua_tointeger(L, -1) == entry;
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 2);
+    return found;
+}
+
 // Builds the coroutine for a stream, entered at `entry`. An existing coroutine is dropped, which
 // is what an interrupt does: the interpreter jumped to a label, and this starts a new run of the
 // same stream at the label's entry point.
@@ -358,6 +403,18 @@ bool BuildCoroutine(AnmVm *vm, Running *running, i32 entry)
         lua_pop(L, 2);
         return false;
     }
+
+    // The label has to exist in this stream before a coroutine is built for it. Building one
+    // anyway looks like success and then runs the stream from its top, because the dispatch at
+    // the top matches no branch and falls through -- so a stream told to resume at 2 when it only
+    // has -1 would run from the beginning and reach its own STOP_HIDE, and the sprite would never
+    // appear.
+    if (!CanEnterAt(L, running->scriptIndex, entry))
+    {
+        lua_pop(L, 2);
+        return false;
+    }
+
     lua_geti(L, -1, running->scriptIndex);
     if (!lua_isfunction(L, -1))
     {
@@ -401,6 +458,10 @@ bool ShouldUseLua(i32 slot)
     // TH07_ANM_LUA_SLOT names one slot, TH07_ANM_LUA_FIRST and _LAST a range, and
     // TH07_ANM_LUA_ALL every slot. The last is what makes a full switch testable: with it, every
     // stream runs through the runtime and the dump says whether any of them behaves differently.
+    //
+    // Lua is not the default yet. Turning it on by default was tried and the title screen came up
+    // with only its large lettering: the difference from running with TH07_ANM_LUA_ALL set is the
+    // thing to find, not something to work around by changing which path is default.
     static const i32 first = [] {
         const char *value = SDL_getenv("TH07_ANM_LUA_FIRST");
         if (!value)

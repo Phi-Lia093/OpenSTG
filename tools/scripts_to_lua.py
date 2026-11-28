@@ -54,7 +54,11 @@ JUMP = 4
 INTERRUPT_LABEL = 21
 DEC_JUMP = 5
 CONDITIONAL = set(range(67, 79))
-EXITS = {-1, 1, 2, 23}
+# The instructions that end a stream: EXIT_HIDE, EXIT_HIDE2 and EXIT. STOP_HIDE is not among
+# them -- it hides the sprite and parks the script, and the stream continues after it, often at a
+# label an interrupt names. Reading it as an end truncated every stream at its first STOP_HIDE,
+# which is why blocks after it were never described and never ran.
+EXITS = {-1, 1, 2}
 
 # Arguments read as a byte rather than a whole word, by the interpreter's own indexing.
 BYTE_ARGUMENT = {'ANM_INTERP_POS', 'ANM_INTERP_ROTATE'}
@@ -129,6 +133,30 @@ def label_name(label: int) -> str:
     return f'Lm1' if label < 0 else f'L{label}'
 
 
+def stream_labels(data: bytes, start: int) -> list[int]:
+    """The interrupt labels a stream can be entered at, in the order they appear.
+
+    A label of -1 is the fallback the interpreter used when an interrupt named a label the stream
+    did not have, so it is listed like any other.
+    """
+    labels = []
+    position = start
+    while position + 8 <= len(data):
+        opcode, size, time, flags = struct.unpack_from('<hHhH', data, position)
+        del time, flags
+        count = max(0, size // 4 - 2)
+        if position + 8 + count * 4 > len(data):
+            break
+        if opcode == INTERRUPT_LABEL and count:
+            value = struct.unpack_from('<i', data, position + 8)[0]
+            if value not in labels:
+                labels.append(value)
+        if opcode in EXITS or size < 8:
+            break
+        position += size
+    return labels
+
+
 def stream_body(data: bytes, start: int, names: dict[int, str],
                 floats: dict[str, set[int]]) -> list[str]:
     instructions = []
@@ -152,6 +180,17 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
             value = struct.unpack('<i', struct.pack('<I', args[0]))[0]
             if value not in labels:
                 labels.append(value)
+
+    # The time each label starts at: the time of the instruction after it. This is what the
+    # interpreter set the clock to when an interrupt jumped to the label.
+    label_times = {}
+    for position in range(len(instructions)):
+        opcode, args = instructions[position][1], instructions[position][5]
+        if opcode != INTERRUPT_LABEL or not args:
+            continue
+        value = struct.unpack('<i', struct.pack('<I', args[0]))[0]
+        following = instructions[position + 1][3] if position + 1 < len(instructions) else 0
+        label_times[value] = following
 
     lines = []
 
@@ -182,8 +221,12 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
         # that a run of the stream reports the same instructions the binary holds.
         if opcode == INTERRUPT_LABEL:
             value = struct.unpack('<i', struct.pack('<I', args[0]))[0] if args else 0
+            # The time the label starts at, which is what the interpreter set the clock to when an
+            # interrupt jumped here. Without it a resumed stream kept the clock it had, so its
+            # next at(t) was already satisfied and the stream ran past the STOP it should have
+            # waited at -- which is how a menu item ended up hidden on every frame.
             lines.append(f'        ::{label_name(value)}::')
-            lines.append(f'        s:LABEL({value})')
+            lines.append(f'        s:LABEL({value}, {label_times.get(value, 0)})')
             continue
 
         rendered = []
@@ -309,6 +352,19 @@ def main() -> int:
             body = block.rstrip().splitlines() if block.strip() else []
             lines.append(f'  [{number}] = {{')
             lines.extend(body)
+
+            # Each stream's interrupt labels, so the runtime can tell whether an interrupt names
+            # one before building a coroutine for it. The interpreter answered the same question
+            # by scanning the stream; here it is written down, which is what makes falling back
+            # to -1 possible. Without it, an interrupt naming 2 built a coroutine entered at 2 for
+            # a stream that only has -1 -- the dispatch matched nothing, the stream ran from the
+            # top and reached its STOP_HIDE again, and the sprite was never visible.
+            all_labels = [stream_labels(data, start) for start in sorted(offsets)]
+            lines.append('    labels = {')
+            for index, labels in enumerate(all_labels):
+                listed = ', '.join(str(value) for value in labels)
+                lines.append(f'      [{index}] = {{ {listed} }},')
+            lines.append('    },')
 
             for index, start in enumerate(sorted(offsets)):
                 streams += 1

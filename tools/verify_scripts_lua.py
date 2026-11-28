@@ -31,7 +31,11 @@ ROOT = Path(__file__).resolve().parents[1]
 ANM = ROOT / 'build/run/th07.data/anm'
 HEADER = ROOT / 'src/script/AnmVm.hpp'
 
-EXITS = {-1, 1, 2, 23}
+# The instructions that end a stream: EXIT_HIDE, EXIT_HIDE2 and EXIT. STOP_HIDE is not among
+# them -- it hides the sprite and parks the script, and the stream continues after it, often at a
+# label an interrupt names. Reading it as an end truncated every stream at its first STOP_HIDE,
+# which is why blocks after it were never described and never ran.
+EXITS = {-1, 1, 2}
 JUMP_OPCODE = 4
 
 CALL = re.compile(r'^s:(\w+)\((.*)\)$')

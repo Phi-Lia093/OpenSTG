@@ -35,7 +35,11 @@ CL = Path(r"D:\toolchain\VS\VC\Tools\MSVC\14.44.35207\bin\Hostx86\x86\cl.exe")
 STAGE = ROOT / '.tools/static'
 ANM = ROOT / 'build/run/th07.data/anm'
 
-EXITS = {-1, 1, 2, 23}
+# The instructions that end a stream: EXIT_HIDE, EXIT_HIDE2 and EXIT. STOP_HIDE is not among
+# them -- it hides the sprite and parks the script, and the stream continues after it, often at a
+# label an interrupt names. Reading it as an end truncated every stream at its first STOP_HIDE,
+# which is why blocks after it were never described and never ran.
+EXITS = {-1, 1, 2}
 
 PROGRAM = r'''
 #include <stdio.h>
@@ -120,6 +124,12 @@ static int record(lua_State *L, const char *name, int time)
    sequence; waiting here would stop every stream at its first label. */
 static int l_label(lua_State *L)
 {
+    /* The call is s:LABEL(n, time). The clock is not part of the instruction -- the binary
+       stores only the label number -- so the stack is cut down to the object and the label
+       before recording, which leaves exactly the one argument the binary holds. */
+    lua_pushvalue(L, 2);
+    lua_replace(L, 2);
+    lua_settop(L, 2);
     record(L, "LABEL", 0);
     return 0;
 }
@@ -227,12 +237,15 @@ static int run_stream(lua_State *L, int entry, int stream, int budget)
     lua_setfield(thread, -2, "at");
     lua_pushcfunction(thread, l_entry);
     lua_setfield(thread, -2, "entry");
-    lua_pushcfunction(thread, l_label);
-    lua_setfield(thread, -2, "LABEL");
     for (int i = 0; kNames[i]; i++)
     {
         set_method(thread, lua_gettop(thread), kNames[i]);
     }
+    /* After the loop: LABEL is in the opcode table, and set_method would give it the generic
+       recorder, which reports the clock the call carries as a second argument. The binary stores
+       only the label, so the dedicated one is registered last. */
+    lua_pushcfunction(thread, l_label);
+    lua_setfield(thread, -2, "LABEL");
 
     g_clock = 0;
     g_remaining = budget;

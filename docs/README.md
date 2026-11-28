@@ -17,9 +17,9 @@ not about making the game run.
 The build targets Windows and uses desktop OpenGL 3.3. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the code is laid out today and
 [ROADMAP.md](ROADMAP.md) for the order the work is planned in.
-[ANM_REPLACEMENT.md](ANM_REPLACEMENT.md) covers the largest piece of planned work in detail:
-replacing the binary animation format with images and TOML, and
-[ANM_DESIGN.md](ANM_DESIGN.md) is the format design that follows from it.
+[ANM_LUA_PLAN.md](ANM_LUA_PLAN.md) covers the largest piece of planned work: replacing the
+binary animation format with a PNG atlas, a TOML description and a Lua script that
+transcribes the original virtual machine's instructions.
 
 ## Building
 

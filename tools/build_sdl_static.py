@@ -24,6 +24,7 @@ anyway.
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 from pathlib import Path
@@ -85,14 +86,25 @@ def configure_and_build(cmake: Path, name: str, source: Path,
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--image-only", action="store_true",
+                        help="rebuild just SDL3_image, keeping the staged SDL3 and SDL3_ttf")
+    args = parser.parse_args()
+
     cmake = find_cmake()
     if cmake is None:
         print("cmake not found")
         return 1
-    for path, what in ((SDL_SRC / "CMakeLists.txt", "SDL"),
-                       (IMAGE_SRC / "CMakeLists.txt", "SDL_image"),
-                       (TTF_SRC / "CMakeLists.txt", "SDL_ttf"),
-                       (TTF_SRC / "external/freetype/CMakeLists.txt", "freetype")):
+
+    # With --image-only the other sources are not read, so a stale or absent clone of them
+    # does not block the rebuild.
+    required = [(IMAGE_SRC / "CMakeLists.txt", "SDL_image")]
+    if not args.image_only:
+        required = [(SDL_SRC / "CMakeLists.txt", "SDL"),
+                    (IMAGE_SRC / "CMakeLists.txt", "SDL_image"),
+                    (TTF_SRC / "CMakeLists.txt", "SDL_ttf"),
+                    (TTF_SRC / "external/freetype/CMakeLists.txt", "freetype")]
+    for path, what in required:
         if not path.is_file():
             print(f"missing {what}: {path}")
             return 1
@@ -100,14 +112,15 @@ def main() -> int:
     STAGE.mkdir(parents=True, exist_ok=True)
 
     # 1) SDL3. Installs headers and SDL3-static.lib into the stage directory.
-    if not configure_and_build(cmake, "sdl", SDL_SRC, {
-        "SDL_STATIC": "ON",
-        "SDL_SHARED": "OFF",
-        "SDL_TESTS": "OFF",
-        "SDL_TEST_LIBRARY": "OFF",
-        "SDL_EXAMPLES": "OFF",
-    }):
-        return 1
+    if not args.image_only:
+        if not configure_and_build(cmake, "sdl", SDL_SRC, {
+            "SDL_STATIC": "ON",
+            "SDL_SHARED": "OFF",
+            "SDL_TESTS": "OFF",
+            "SDL_TEST_LIBRARY": "OFF",
+            "SDL_EXAMPLES": "OFF",
+        }):
+            return 1
 
     # 2) SDL3_image and 3) SDL3_ttf build against the staged SDL3. Pointing them at the
     # stage directory keeps them from picking up a system SDL.
@@ -117,12 +130,31 @@ def main() -> int:
     image_defines = {
         "SDL_STATIC": "ON",
         "SDL_SHARED": "OFF",
+        # The sample program is an SDL application of its own and pulls in system libraries
+        # the archive does not need.
+        "SDLIMAGE_SAMPLES": "OFF",
+        "SDLIMAGE_TESTS": "OFF",
+        # SDL3_image 3.5 looks SDL3 up with find_package. The staged tree is headers and
+        # archives only, so a minimal config is generated beside them to provide the
+        # targets it expects; see the file for what it defines.
+        "SDL3_DIR": str(sdl_lib / "cmake/SDL3"),
         "SDL3_INCLUDE_DIR": str(sdl_include),
         "SDL3_LIBRARY": str(sdl_lib / "SDL3-static.lib"),
     }
+    # The game reads two image formats: the JPEGs that ship with the data and must stay JPEG,
+    # and the PNGs that animations are converted to. Every other format stays off, which
+    # keeps the archive from pulling in codecs nothing loads.
     for fmt in IMAGE_FORMATS:
         image_defines[f"SDLIMAGE_{fmt}"] = "OFF"
     image_defines["SDLIMAGE_JPG"] = "ON"
+    image_defines["SDLIMAGE_PNG"] = "ON"
+    # PNG through stb_image, which SDL3_image carries itself, rather than libpng. The vendored
+    # libpng would add zlib and a second PNG decoder for a feature -- APNG -- the game does not
+    # use, and stb also decodes the interlaced and 16-bit files an artist might hand it.
+    image_defines["SDLIMAGE_PNG_LIBPNG"] = "OFF"
+    # Saving is not done by the game, so the encoders are left out too.
+    for fmt in IMAGE_FORMATS:
+        image_defines[f"SDLIMAGE_{fmt}_SAVE"] = "OFF"
     # find_package would reject the staged config; a manual link is what the game does too.
     image_defines["SQLITE3_FOUND"] = "FALSE"
     if not configure_and_build(cmake, "image", IMAGE_SRC, image_defines):
@@ -137,7 +169,7 @@ def main() -> int:
         "SDLTTF_HARFBUZZ": "OFF",
         "SDLTTF_PLUTOSVG": "OFF",
     }
-    if not configure_and_build(cmake, "ttf", TTF_SRC, ttf_defines):
+    if not args.image_only and not configure_and_build(cmake, "ttf", TTF_SRC, ttf_defines):
         return 1
 
     libs = sorted(STAGE.rglob("*.lib"))

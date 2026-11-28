@@ -27,7 +27,9 @@ struct GameErrorContext
         if (this->m_BufferEnd != this->m_Buffer)
         {
             this->Log("---------------------------------------------------------- \n");
-            if (this->m_ShowMessageBox)
+            // The log is always written to log.txt. The message box blocks until someone
+            // clicks it, which stops an unattended run, so TH07_NO_MESSAGEBOX suppresses it.
+            if (this->m_ShowMessageBox && !SDL_getenv("TH07_NO_MESSAGEBOX"))
             {
                 SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "log", this->m_Buffer, NULL);
             }

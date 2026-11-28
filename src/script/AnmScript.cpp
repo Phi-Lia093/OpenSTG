@@ -56,15 +56,22 @@ const struct OpcodeName
     {"JUMP_IF_GEQ_FLOAT", 78}, {"WAIT", 79}, {"SET_SCROLLVEL_X", 80}, {"SET_SCROLLVEL_Y", 81},
 };
 
-// The Lua state for the animation being run, shared by every VM using it.
+// One Lua state per animation, not one at a time.
+//
+// A VM's coroutine belongs to the state that built it, so closing that state invalidates every
+// coroutine made from it. With one state kept for whichever animation was used last, alternating
+// between two animations -- which is what the whole game does -- closes a state other VMs are
+// still running in, and they then call into freed memory.
 struct State
 {
-    std::string name;
     lua_State *lua = nullptr;
     int animationRef = LUA_NOREF;
 };
 
-State g_state;
+std::map<std::string, std::unique_ptr<State>> g_states;
+
+// The names of the animations whose state is open, for diagnostics.
+const std::string *g_currentName = nullptr;
 
 // What a VM holds while it runs. Kept outside the VM because AnmVm memsets itself and cannot
 // carry a std::string.
@@ -80,6 +87,9 @@ struct Running
     i32 entryIndex = 0;
     i32 scriptIndex = 0;
     i32 entry = 0;
+    // The state this coroutine was made from. Every use of the coroutine goes through it, which
+    // is what makes a state being closed while another VM still needs it impossible.
+    State *state = nullptr;
 };
 
 std::map<const AnmVm *, std::unique_ptr<Running>> g_running;
@@ -102,35 +112,24 @@ bool ReadAsset(const std::string &path, std::string &out)
     return true;
 }
 
-void CloseState()
+State *OpenState(const char *anmName)
 {
-    if (g_state.lua)
+    auto found = g_states.find(anmName);
+    if (found != g_states.end())
     {
-        lua_close(g_state.lua);
-        g_state.lua = nullptr;
-        g_state.animationRef = LUA_NOREF;
+        return found->second.get();
     }
-    g_state.name.clear();
-}
-
-bool OpenState(const char *anmName)
-{
-    if (g_state.lua && g_state.name == anmName)
-    {
-        return true;
-    }
-    CloseState();
 
     std::string text;
     if (!ReadAsset(PathFor(anmName), text))
     {
-        return false;
+        return nullptr;
     }
 
     lua_State *lua = luaL_newstate();
     if (!lua)
     {
-        return false;
+        return nullptr;
     }
     luaL_openlibs(lua);
 
@@ -139,19 +138,22 @@ bool OpenState(const char *anmName)
     {
         g_GameErrorContext.Log("アニメ %s: %s\n", anmName, lua_tostring(lua, -1));
         lua_close(lua);
-        return false;
+        return nullptr;
     }
     if (!lua_istable(lua, -1))
     {
         g_GameErrorContext.Log("アニメ %s: 記述がテーブルではありません\n", anmName);
         lua_close(lua);
-        return false;
+        return nullptr;
     }
 
-    g_state.name = anmName;
-    g_state.lua = lua;
-    g_state.animationRef = luaL_ref(lua, LUA_REGISTRYINDEX);
-    return true;
+    auto state = std::make_unique<State>();
+    state->lua = lua;
+    state->animationRef = luaL_ref(lua, LUA_REGISTRYINDEX);
+
+    State *result = state.get();
+    g_states[anmName] = std::move(state);
+    return result;
 }
 
 AnmVm *VmOf(lua_State *L)
@@ -330,7 +332,7 @@ void RegisterMethods(lua_State *L, int table)
 // same stream at the label's entry point.
 bool BuildCoroutine(AnmVm *vm, Running *running, i32 entry)
 {
-    lua_State *L = g_state.lua;
+    lua_State *L = running->state ? running->state->lua : nullptr;
     if (!L)
     {
         return false;
@@ -344,7 +346,7 @@ bool BuildCoroutine(AnmVm *vm, Running *running, i32 entry)
     running->thread = nullptr;
     running->started = false;
 
-    lua_rawgeti(L, LUA_REGISTRYINDEX, g_state.animationRef);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, running->state->animationRef);
     if (!lua_istable(L, -1))
     {
         lua_pop(L, 1);
@@ -396,8 +398,9 @@ bool Exists(const char *anmName)
 
 bool ShouldUseLua(i32 slot)
 {
-    // TH07_ANM_LUA_SLOT names one slot, TH07_ANM_LUA_FIRST and _LAST name a range, so more than
-    // one stream can be compared at a time while every other slot keeps the binary path.
+    // TH07_ANM_LUA_SLOT names one slot, TH07_ANM_LUA_FIRST and _LAST a range, and
+    // TH07_ANM_LUA_ALL every slot. The last is what makes a full switch testable: with it, every
+    // stream runs through the runtime and the dump says whether any of them behaves differently.
     static const i32 first = [] {
         const char *value = SDL_getenv("TH07_ANM_LUA_FIRST");
         if (!value)
@@ -416,23 +419,32 @@ bool ShouldUseLua(i32 slot)
         return value ? (i32)atoi(value) : -1;
     }();
 
+    static const bool all = [] {
+        const char *value = SDL_getenv("TH07_ANM_LUA_ALL");
+        return value != nullptr && value[0] == '1';
+    }();
+
+    if (all)
+    {
+        return true;
+    }
     return first >= 0 && slot >= first && slot <= last;
 }
 
 bool Start(AnmVm *vm, const char *anmName, i32 entryIndex, i32 scriptIndex)
 {
-    AnmVmDebug::Note("start: called for %s", anmName);
-    if (!OpenState(anmName))
+    State *state = OpenState(anmName);
+    if (!state)
     {
         AnmVmDebug::Note("start: cannot open %s", anmName);
         return false;
     }
-    AnmVmDebug::Note("start: opened %s", anmName);
 
     auto running = std::make_unique<Running>();
     running->animation = anmName;
     running->entryIndex = entryIndex;
     running->scriptIndex = scriptIndex;
+    running->state = state;
 
     if (!BuildCoroutine(vm, running.get(), 0))
     {
@@ -443,8 +455,6 @@ bool Start(AnmVm *vm, const char *anmName, i32 entryIndex, i32 scriptIndex)
 
     Release(vm);
     g_running[vm] = std::move(running);
-    AnmVmDebug::Note("start: built %s entry %d stream %d", anmName, (int)entryIndex,
-                     (int)scriptIndex);
     return true;
 }
 
@@ -554,17 +564,28 @@ void Release(AnmVm *vm)
     {
         return;
     }
-    if (g_state.lua && it->second->threadRef != LUA_NOREF)
+    if (it->second->state && it->second->state->lua && it->second->threadRef != LUA_NOREF)
     {
-        luaL_unref(g_state.lua, LUA_REGISTRYINDEX, it->second->threadRef);
+        luaL_unref(it->second->state->lua, LUA_REGISTRYINDEX, it->second->threadRef);
     }
     g_running.erase(it);
 }
 
 void Shutdown()
 {
+    // Coroutines go first: a coroutine's reference lives in its animation's state, and closing a
+    // state before its coroutines are dropped leaves those references pointing at nothing.
     g_running.clear();
-    CloseState();
+
+    for (auto &entry : g_states)
+    {
+        if (entry.second->lua)
+        {
+            lua_close(entry.second->lua);
+            entry.second->lua = nullptr;
+        }
+    }
+    g_states.clear();
 }
 
 } // namespace AnmScript

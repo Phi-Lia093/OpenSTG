@@ -19,6 +19,7 @@
 #include "core/utils.hpp"
 #include "script/AnmEntryFile.hpp"
 #include "script/AnmOp.hpp"
+#include "script/AnmVmDebug.hpp"
 #include "script/AnmScripts.hpp"
 
 AnmManager *g_AnmManager;
@@ -2060,6 +2061,7 @@ stop:
     }
     vm->currentTimeInScript++;
     this->scriptTicksThisFrame++;
+    AnmVmDebug::Dump(vm);
     return 0;
 }
 

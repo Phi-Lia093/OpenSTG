@@ -44,6 +44,7 @@ set(SOURCES
     src/script/AnmManager.cpp
     src/script/AnmScripts.cpp
     src/script/AnmOp.cpp
+    src/script/AnmVmDebug.cpp
     src/script/AnmEntryFile.cpp
     src/script/AnmVm.cpp
     src/script/EclManager.cpp

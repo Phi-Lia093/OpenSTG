@@ -174,6 +174,13 @@ AnmVm *VmOf(lua_State *L)
 // The interpreter's `while (instr->time <= currentTime)` decision, moved into the coroutine. If
 // the time has come it returns at once and the stream runs on -- the interpreter running several
 // instructions in one frame. If it has not, it yields and Run resumes next frame.
+// The continuation for at(). A C function that yields with plain lua_yield does not run again
+// when it is resumed: lua_yield is lua_yieldk with no continuation, and without one the resume
+// returns from the function rather than continuing it. That is why a wait looked satisfied the
+// frame after it started -- the stream carried on from the call and reached the STOP_HIDE at the
+// end of its block.
+int Lua_at_continue(lua_State *L, int status, lua_KContext context);
+
 int Lua_at(lua_State *L)
 {
     AnmVm *vm = VmOf(L);
@@ -182,11 +189,44 @@ int Lua_at(lua_State *L)
     {
         return 0;
     }
-    if (requested > vm->currentTimeInScript.GetCurrent())
+
+    while (requested > vm->currentTimeInScript.GetCurrent())
     {
         lua_pushinteger(L, requested);
-        return lua_yield(L, 1);
+        return lua_yieldk(L, 1, (lua_KContext)requested, Lua_at_continue);
     }
+    return 0;
+}
+
+int Lua_at_continue(lua_State *L, int status, lua_KContext context)
+{
+    (void)status;
+    AnmVm *vm = VmOf(L);
+    const i32 requested = (i32)context;
+    if (!vm)
+    {
+        return 0;
+    }
+    while (requested > vm->currentTimeInScript.GetCurrent())
+    {
+        lua_pushinteger(L, requested);
+        return lua_yieldk(L, 1, context, Lua_at_continue);
+    }
+    return 0;
+}
+
+// set_clock(t): what a jump does to the clock.
+//
+// A jump goes to another instruction and also sets the clock to that instruction's time. The
+// generated stream writes this immediately before a Lua jump, so the two cannot come apart.
+int Lua_setClock(lua_State *L)
+{
+    AnmVm *vm = VmOf(L);
+    if (!vm || lua_gettop(L) < 2)
+    {
+        return 0;
+    }
+    vm->currentTimeInScript = (i32)lua_tointeger(L, 2);
     return 0;
 }
 
@@ -224,6 +264,7 @@ int Lua_Label(lua_State *L)
     {
         return 0;
     }
+    const i32 label = (i32)lua_tointeger(L, 2);
     const i32 startTime = (i32)lua_tointeger(L, 3);
     vm->currentTimeInScript = startTime;
     return 0;
@@ -324,17 +365,23 @@ void set_method(lua_State *L, int table, const char *name, i32 opcode)
 
 void RegisterMethods(lua_State *L, int table)
 {
+    for (const auto &entry : kNames)
+    {
+        set_method(L, table, entry.name, entry.opcode);
+    }
+
+    // After the loop, because LABEL is in the opcode table and set_method would give it the
+    // generic instruction handler. That handler ignores the clock a label carries, so every
+    // interrupt resumed its stream at the clock it already had. The same ordering mistake was in
+    // the runtime check, which is why it agreed.
     lua_pushcfunction(L, Lua_at);
     lua_setfield(L, table, "at");
     lua_pushcfunction(L, Lua_entry);
     lua_setfield(L, table, "entry");
     lua_pushcfunction(L, Lua_Label);
     lua_setfield(L, table, "LABEL");
-
-    for (const auto &entry : kNames)
-    {
-        set_method(L, table, entry.name, entry.opcode);
-    }
+    lua_pushcfunction(L, Lua_setClock);
+    lua_setfield(L, table, "SET_CLOCK");
 }
 
 // Whether a stream can be entered at `entry`. A stream lists its labels in its entry table, and
@@ -535,23 +582,16 @@ i32 Run(AnmVm *vm, i32 time)
     }
     Running *running = it->second.get();
 
-    // A stopped script stays where it is until an interrupt names a label. The interpreter ran it
-    // again every frame only to compare a time it had already passed; here not resuming is the
-    // same thing, and it keeps the coroutine from running past the STOP it is sitting on.
     if (vm->pendingInterrupt == 0 && vm->isStopped != 0)
     {
         return 0;
     }
 
-    // An interrupt resumes the stream at a label rather than where it stopped.
     if (vm->pendingInterrupt != 0)
     {
         const i32 wanted = (i32)vm->pendingInterrupt;
         vm->pendingInterrupt = 0;
 
-        // Two attempts, and the second is the fallback the interpreter used: a label numbered -1
-        // accepted an interrupt no other label matched. BuildCoroutine leaves the main state's
-        // stack as it found it, so trying twice in a row is safe.
         bool entered = BuildCoroutine(vm, running, wanted);
         if (!entered)
         {
@@ -560,22 +600,17 @@ i32 Run(AnmVm *vm, i32 time)
 
         if (!entered)
         {
-            AnmVmDebug::Note("interrupt %d: slot %d has no such label", (int)wanted,
-                             (int)vm->anmFileIdx);
             return 0;
         }
         vm->isStopped = 0;
         vm->visible = 1;
-        AnmVmDebug::Note("interrupt %d resumes slot %d at a label", (int)wanted,
-                         (int)vm->anmFileIdx);
     }
-if (!running->thread)
+
+    if (!running->thread)
     {
         return 1;
     }
 
-    // The interpreter ran as many instructions as the clock allowed and stopped at the first one
-    // whose time had not come. Resuming once per call would run one instruction per frame.
     for (int step = 0; step < 256; step++)
     {
         const bool first = !running->started;
@@ -585,7 +620,6 @@ if (!running->thread)
 
         if (status == LUA_OK)
         {
-            AnmVmDebug::Note("slot %d: the stream ran to its end", (int)vm->anmFileIdx);
             Release(vm);
             return 1;
         }
@@ -593,13 +627,10 @@ if (!running->thread)
         {
             g_GameErrorContext.Log("アニメの実行に失敗: %s\n",
                                    lua_tostring(running->thread, -1));
-            AnmVmDebug::Note("lua error in slot %d: %s", (int)vm->anmFileIdx,
-                             lua_tostring(running->thread, -1));
             Release(vm);
             return 1;
         }
 
-        // A yield carries the time at(t) is waiting for, or -1 for "this frame is over".
         i32 requested = -1;
         if (lua_gettop(running->thread) > 0 && lua_isinteger(running->thread, -1))
         {
@@ -613,7 +644,6 @@ if (!running->thread)
         }
     }
 
-    AnmVmDebug::Note("slot %d ran 256 instructions without waiting", (int)vm->anmFileIdx);
     Release(vm);
     return 1;
 }

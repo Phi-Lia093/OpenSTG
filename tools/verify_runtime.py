@@ -41,6 +41,10 @@ ANM = ROOT / 'build/run/th07.data/anm'
 # which is why blocks after it were never described and never ran.
 EXITS = {-1, 1, 2}
 
+# The jump, which is where a repeating stream's walk stops: a jump back to somewhere already
+# visited means everything from there is what already came before.
+JUMP_OPCODE = 4
+
 PROGRAM = r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +69,12 @@ static int g_clock = 0;
    yields. When the budget runs out the instruction is still recorded and then the call reports
    an error, which the driver turns into "this stream did not finish". */
 static int g_remaining = 0;
+
+/* Where the last jump went, and whether the stream has started repeating. A looping animation
+   jumps back to a place it has already been; the check walks each stream once, so the second time
+   a jump goes to the same place the stream has said everything it has to say. */
+static int g_last_jump = -1;
+static int g_looping = 0;
 
 static int record(lua_State *L, const char *name, int time)
 {
@@ -145,7 +155,11 @@ static int l_entry(lua_State *L)
 static int l_at(lua_State *L)
 {
     const int requested = (int)luaL_checkinteger(L, 2);
-    if (requested > g_clock)
+
+    /* The clock only advances while the stream is still being walked. Once it has jumped back to
+       a place it already went through, it is repeating, and advancing the clock again would let
+       the loop run until the budget ran out instead of ending where the description ends. */
+    if (!g_looping && requested > g_clock)
     {
         g_clock = requested;
     }
@@ -157,6 +171,40 @@ static int l_at(lua_State *L)
 
    The name comes from an upvalue set when the closure was made, not from the stack, because a
    method call carries only its arguments. */
+/* SET_CLOCK(time, offset): the clock half of a jump, written just before the Lua jump that goes
+   there. A jump is one instruction in the binary carrying both, so both are recorded here as that
+   instruction -- two statements in Lua, one instruction to compare. */
+static int l_set_clock(lua_State *L)
+{
+    /* The call is SET_CLOCK(time, offset), written that way so the generated line reads as the
+       clock it sets followed by where it goes. The instruction stores them the other way round:
+       the offset first, then the clock. */
+    const int time = (int)lua_tointeger(L, 2);
+    const int offset = (int)lua_tointeger(L, 3);
+    const int at = g_clock;
+    const int repeating = (offset == g_last_jump);
+    g_last_jump = offset;
+
+    g_clock = time;
+    /* The stack is cut down to exactly what the binary instruction holds: the jump's offset and
+       the clock it sets. record() reads from index 2, so the object goes at 1 and the two
+       arguments follow. */
+    lua_settop(L, 1);
+    lua_pushinteger(L, offset);
+    lua_pushinteger(L, time);
+    record(L, "JUMP", at);
+
+    /* A stream that comes back to a jump it already made is repeating: everything from here is
+       what it already did. The jump itself is recorded first, so the sequence still ends with the
+       instruction the binary ends its walk at, and then the walk stops. */
+    if (repeating)
+    {
+        lua_pushliteral(L, "loop");
+        lua_error(L);
+    }
+    return 0;
+}
+
 static int l_instruction(lua_State *L)
 {
     const char *name = lua_tostring(L, lua_upvalueindex(1));
@@ -246,6 +294,8 @@ static int run_stream(lua_State *L, int entry, int stream, int budget)
        only the label, so the dedicated one is registered last. */
     lua_pushcfunction(thread, l_label);
     lua_setfield(thread, -2, "LABEL");
+    lua_pushcfunction(thread, l_set_clock);
+    lua_setfield(thread, -2, "SET_CLOCK");
 
     g_clock = 0;
     g_remaining = budget;
@@ -254,6 +304,18 @@ static int run_stream(lua_State *L, int entry, int stream, int budget)
        A stream that loops forever trips the budget, which ends it the same way the game's
        per-frame step would eventually leave a looping animation running. */
     const int status = lua_pcall(thread, 1, 0, 0);
+
+    if (status != LUA_OK)
+    {
+        /* "loop" is how a repeating stream ends its walk: it came back to a jump it had already
+           made, so the description has been read in full. Anything else is a real failure. */
+        const char *message = lua_tostring(thread, -1);
+        if (message && strcmp(message, "loop") == 0)
+        {
+            lua_pop(L, 4);
+            return g_count;
+        }
+    }
 
     lua_pop(L, 4);
     if (status != LUA_OK)
@@ -382,6 +444,7 @@ def expected_streams(directory: Path, entry: int) -> list[list[tuple[int, int, l
     for start in sorted(offsets):
         stream = []
         position = start
+        seen_jump_targets = set()
         while position + 8 <= len(data):
             opcode, size, time, flags = struct.unpack_from('<hHhH', data, position)
             count = max(0, size // 4 - 2)
@@ -396,8 +459,22 @@ def expected_streams(directory: Path, entry: int) -> list[list[tuple[int, int, l
                 rendered.append(word)
 
             stream.append((opcode, time, rendered, flags))
+
             if opcode in EXITS or size < 8:
                 break
+
+            # A jump moves to its target and the walk continues from there, so the instructions
+            # between the jump and the target are not part of the walk at all. Following the jump
+            # is what makes this the same path the recorder walks; stopping at the jump instead
+            # would end the stream early and leave the target's instructions unread.
+            if opcode == JUMP_OPCODE and words:
+                target = words[0]
+                if target in seen_jump_targets:
+                    break
+                seen_jump_targets.add(target)
+                position = start + target
+                continue
+
             position += size
         out.append(stream)
     return out

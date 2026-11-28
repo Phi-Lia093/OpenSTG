@@ -40,6 +40,9 @@ JUMP_OPCODE = 4
 
 CALL = re.compile(r'^s:(\w+)\((.*)\)$')
 AT = re.compile(r'^s:at\((-?\d+)\)$')
+JUMP_LABEL = re.compile(r'^::J(\d+)::$')
+SET_CLOCK = re.compile(r'^s:SET_CLOCK\((-?\d+), (-?\d+)\)$')
+GOTO_JUMP = re.compile(r'^goto J(\d+)$')
 LABEL = re.compile(r'^::L(m?\d+)::$')
 GOTO = re.compile(r'^goto L(\d+)$')
 
@@ -80,6 +83,7 @@ def lua_stream(body: str, numbers: dict[str, int]) -> tuple[list[tuple[int, int]
     out = []
     problems = []
     time = 0
+    pending_clock = None
     for raw in body.splitlines():
         line = raw.strip()
         if not line:
@@ -98,6 +102,20 @@ def lua_stream(body: str, numbers: dict[str, int]) -> tuple[list[tuple[int, int]
         if LABEL.match(line):
             # The Lua label is where the entry dispatch jumps to. The s:LABEL call beside it is
             # what running the stream reports, so that is counted and this is not.
+            continue
+        if JUMP_LABEL.match(line):
+            # Where a jump lands. The jump itself is counted at the call that goes there.
+            continue
+        match = SET_CLOCK.match(line)
+        if match:
+            # The clock half of a jump. The jump that follows carries both halves.
+            pending_clock = int(match.group(1))
+            continue
+        match = GOTO_JUMP.match(line)
+        if match:
+            # A jump: the instruction with the offset it lands on and the clock it sets.
+            out.append((time, JUMP_OPCODE))
+            pending_clock = None
             continue
         if GOTO.match(line):
             out.append((time, JUMP_OPCODE))

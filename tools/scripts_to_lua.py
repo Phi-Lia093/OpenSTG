@@ -133,6 +133,21 @@ def label_name(label: int) -> str:
     return f'Lm1' if label < 0 else f'L{label}'
 
 
+def jump_name(offset: int) -> str:
+    """The Lua label for a jump target, named by the byte offset it lands on."""
+    return f'J{offset}'
+
+
+def jump_label(offset: int) -> str:
+    """The Lua label a jump to `offset` goes to, or an empty string if nothing is emitted there.
+
+    Only offsets some instruction starts at get a label; a jump to the middle of an instruction
+    cannot happen in well-formed data, and emitting a label at a point nothing reaches would hide
+    that rather than show it.
+    """
+    return jump_name(offset)
+
+
 def stream_labels(data: bytes, start: int) -> list[int]:
     """The interrupt labels a stream can be entered at, in the order they appear.
 
@@ -203,8 +218,18 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
 
     current_time = None
 
+    # Every offset a jump targets gets a label, so the jump has somewhere to go.
+    jump_targets = set()
+    for instruction in instructions:
+        if instruction[1] == JUMP and instruction[5]:
+            jump_targets.add(struct.unpack('<i', struct.pack('<I', instruction[5][0]))[0])
+
     for relative, opcode, size, time, flags, args in instructions:
-        del relative, size
+        del size
+
+        # The place this instruction starts, which is what a jump's offset names.
+        if relative in jump_targets:
+            lines.append(f'        ::{jump_name(relative)}::')
 
         if time != current_time:
             lines.append(f'        s:at({time})')
@@ -247,15 +272,26 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
         call += ', '.join(rendered)
         call += ')'
 
-        # A jump carries two things: where it goes and what the clock becomes. Writing it as a
-        # bare `goto` loses the second, and that is not a cosmetic loss -- the stream at
-        # eff01's entry 0 jumps back with time 0, so the clock restarts and the at(1) on the
-        # next pass waits again. Without the reset the clock is already past, at(1) returns at
-        # once, and the stream spins for ever.
+        # A jump goes somewhere and sets the clock. Leaving it as a plain call loses the going:
+        # the runtime's JUMP records where to go and reports a restart, but a coroutine cannot be
+        # moved, so the stream carried on to the next instruction instead. A looping animation
+        # jumped back to its first frame and, in Lua, fell through to the EXIT_HIDE after the
+        # jump -- which is why a player standing still turned invisible.
         #
-        # So the jump stays a call, with both arguments, and the runtime sets the clock and
-        # then moves. A `goto` would have to be paired with a separate clock reset, and two
-        # statements that must stay together are easy to separate by accident.
+        # The clock is set first, then a Lua jump to the offset's label. Both statements are
+        # emitted together so they cannot be separated.
+        if opcode == JUMP and args:
+            offset = struct.unpack('<i', struct.pack('<I', args[0]))[0]
+            target = jump_label(offset)
+            if target:
+                clock = struct.unpack('<i', struct.pack('<I', args[1]))[0] if len(args) > 1 else 0
+                # Both halves of the jump on one line: the clock it sets and where it goes. The
+                # runtime uses the clock; the check reads both, so a jump is compared as the
+                # single instruction the binary holds rather than as two unrelated statements.
+                lines.append(f'        s:SET_CLOCK({clock}, {offset})')
+                lines.append(f'        goto {target}')
+                continue
+
         lines.append(call)
 
     if not lines:

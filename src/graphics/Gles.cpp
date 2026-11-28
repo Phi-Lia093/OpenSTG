@@ -41,13 +41,9 @@ bool ThGlLoadFunctions()
 }
 #endif
 
-#ifdef USING_GL
+// Desktop OpenGL 3.3 core: no ES precision qualifiers to declare.
 #define GLSL_VERSION "#version 330 core\n"
 #define GLSL_PRECISION
-#else
-#define GLSL_VERSION "#version 300 es\n"
-#define GLSL_PRECISION "precision mediump float;\n"
-#endif
 
 // clang-format off
 const char *vertexShaderSource =
@@ -573,11 +569,7 @@ void GlesGraphics::SetDepthFunc(DepthFunc func)
 
 void GlesGraphics::SetClearDepth(f32 depth)
 {
-#ifdef USING_GL
     glClearDepth(depth);
-#else
-    glClearDepthf(depth);
-#endif
 }
 
 void GlesGraphics::SetClearColor(ZunColor color)
@@ -929,18 +921,7 @@ void GlesGraphics::SwapBuffers()
     i32 drawableWidth, drawableHeight;
     SDL_GetWindowSizeInPixels(g_GameWindow.window, &drawableWidth, &drawableHeight);
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    SDL_PropertiesID props = SDL_GetWindowProperties(g_GameWindow.window);
-    this->defaultFbo = (GLuint)SDL_GetNumberProperty(
-        props, SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, this->defaultFbo);
-#endif
-
     glBindFramebuffer(GL_READ_FRAMEBUFFER, this->fbo);
-#ifndef USING_GL
-    const GLenum attachments[] = {GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
-    glInvalidateFramebuffer(GL_READ_FRAMEBUFFER, 2, attachments);
-#endif
-
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, this->defaultFbo);
 
     glDisable(GL_SCISSOR_TEST);
@@ -989,11 +970,6 @@ void GlesGraphics::SwapBuffers()
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    glBindRenderbuffer(
-        GL_RENDERBUFFER,
-        SDL_GetNumberProperty(props, SDL_PROP_WINDOW_UIKIT_OPENGL_RENDERBUFFER_NUMBER, 0));
-#endif
     SDL_GL_SwapWindow(g_GameWindow.window);
 
     glBindFramebuffer(GL_FRAMEBUFFER, this->fbo);

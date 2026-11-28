@@ -5,7 +5,6 @@
 #include <SDL3/SDL_keyboard.h>
 
 #include "Supervisor.hpp"
-#include "Touch.hpp"
 #include "inttypes.hpp"
 #include "utils.hpp"
 
@@ -182,7 +181,7 @@ u16 Controller::GetInput()
     buttons |= KEY_PRESSED(SDL_SCANCODE_R, TH_BUTTON_RESET);
     buttons |= KEY_PRESSED(SDL_SCANCODE_RETURN, TH_BUTTON_ENTER);
 
-    return GetControllerInput(buttons) | Touch::GetButtonBits();
+    return GetControllerInput(buttons);
 }
 
 void Controller::ResetKeyboard()

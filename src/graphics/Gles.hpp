@@ -1,25 +1,21 @@
 #pragma once
 
-#ifdef __APPLE__
-#include <TargetConditionals.h>
-#if TARGET_OS_IPHONE
-#define GLES_SILENCE_DEPRECATION
-#include <OpenGLES/ES3/gl.h>
-#include <OpenGLES/ES3/glext.h>
-#else
-#include <OpenGL/gl3.h>
-#endif
-#elif defined(_WIN32)
-// Windows ships only desktop OpenGL, and its gl.h stops at 1.1. The 3.3 entry points are
-// resolved through SDL, which loads them from the driver.
-#define USING_GL
-#include <SDL3/SDL_opengl.h>
-#include "GLWin32.hpp"
-#else
-#include <GLES3/gl3.h>
-#endif
+// Desktop OpenGL 3.3, on Windows.
+//
+// The upstream port used OpenGL ES to cover Android, iOS and the web alongside desktop. This
+// build targets Windows only, where the system library is desktop OpenGL: gl.h stops at 1.1,
+// so the 3.3 entry points the renderer calls are resolved from the driver at runtime, which
+// GLWin32.hpp declares and Gles.cpp fills in.
+//
+// USING_GL selects the desktop path in the shaders and in the context setup: GLSL 3.30 core
+// instead of GLSL ES 3.00, and no precision qualifiers.
 
+#define USING_GL
+
+#include <SDL3/SDL_opengl.h>
 #include <SDL3/SDL_video.h>
+
+#include "GLWin32.hpp"
 
 #include "AnmManager.hpp"
 #include "ZunGraphics.hpp"

@@ -17,7 +17,6 @@
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
 #include "Supervisor.hpp"
-#include "Touch.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #include "graphics/ZunGraphics.hpp"
@@ -491,7 +490,6 @@ ZunResult GameManager::AddedCallback(GameManager *arg)
     i32 shotTypeAndChar;
     u32 size;
 
-    Touch::ResetRunUsage();
 
     g_GameWindow.ResetAccumulator();
     g_Supervisor.checkTiming = FALSE;

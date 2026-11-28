@@ -106,18 +106,8 @@ i32 FileSystem::WriteDataToFile(const char *filename, const void *out, u32 bytes
 
 std::string FileSystem::GetBasePath(const char *filename)
 {
-#if defined(TH_EXTERNAL_ASSETS)
-    const char *path = nullptr;
-#if defined(__ANDROID__)
-    path = SDL_GetAndroidExternalStoragePath();
-#elif defined(__APPLE__) && TARGET_OS_IPHONE
-    path = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
-#endif
-    if (path)
-    {
-        return std::string(path) + '/' + filename;
-    }
-#endif
+    // Everything the game reads sits next to the executable: the th07.data/ directory and the
+    // music stream.
     const char *basePath = SDL_GetBasePath();
     if (basePath)
     {
@@ -128,18 +118,7 @@ std::string FileSystem::GetBasePath(const char *filename)
 
 std::string FileSystem::GetPrefPath(const char *filename)
 {
-#if defined(__EMSCRIPTEN__)
-    return std::string("/savesth07/") + filename;
-#elif defined(TH_EXTERNAL_ASSETS)
+    // Saves and the configuration live beside the executable too, which keeps a build
+    // self-contained and lets several copies coexist.
     return GetBasePath(filename);
-#elif defined(__ANDROID__) || defined(__APPLE__)
-    static char *prefPath = SDL_GetPrefPath("TeamShanghaiAlice", "th07");
-    if (prefPath)
-    {
-        return std::string(prefPath) + filename;
-    }
-    return std::string(filename);
-#else
-    return std::string(filename);
-#endif
 }

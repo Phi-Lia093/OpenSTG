@@ -64,7 +64,9 @@ Each resource type has one manager, and they are global singletons:
 
 `ZunGraphics` is an interface that models the Direct3D 8 device the original was written
 against: transform matrices, texture stage state, render state, clear, viewport, draw
-primitives. `GlesGraphics` implements it on OpenGL 3.3 core.
+primitives. `GlesGraphics` implements it on OpenGL 3.3 core. The name is a leftover from
+the upstream port, which used OpenGL ES to reach Android, iOS and the web; this build is
+Windows only, so the class is desktop GL throughout and the GLES code paths are gone.
 
 The D3D model shows up directly in the shader, which reproduces the fixed-function
 pipeline rather than replacing it:

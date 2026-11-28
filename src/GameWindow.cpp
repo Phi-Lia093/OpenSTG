@@ -65,9 +65,7 @@ RenderResult GameWindow::Render()
 {
     if (!this->isAppActive)
     {
-#ifndef __EMSCRIPTEN__
         SDL_WaitEventTimeout(nullptr, 1000);
-#endif
         return RENDER_RESULT_KEEP_RUNNING;
     }
 
@@ -197,10 +195,6 @@ ZunResult GameWindow::CreateGameWindow()
     SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
                           "東方妖々夢　〜 Perfect Cherry Blossom. ver 1.00b");
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN, true);
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, true);
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
-#elif !defined(__EMSCRIPTEN__)
     if (!g_Supervisor.cfg.windowed)
     {
         SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, true);
@@ -210,7 +204,6 @@ ZunResult GameWindow::CreateGameWindow()
         SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, GAME_WINDOW_WIDTH);
         SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, GAME_WINDOW_HEIGHT);
     }
-#endif
 
     g_GameWindow.isAppActive = 1;
     g_LastPerfCounter = SDL_GetPerformanceCounter();

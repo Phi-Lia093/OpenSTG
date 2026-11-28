@@ -419,13 +419,9 @@ ZunResult Supervisor::LoadGameData()
 
 i32 Supervisor::CheckVSync()
 {
-#ifdef __EMSCRIPTEN__
-    return 0;
-#endif
-
     // the previous way of doing this does not work at all with the gles renderer, since swapbuffers
-    // would just return immediately. invariably this meant that every system (well, besides
-    // emscripten) would have software vsync on regardless of if the display was 60 hz. so instead
+    // would just return immediately. invariably this meant that every system would have software
+    // vsync on regardless of if the display was 60 hz. so instead
     // we just query the refresh rate and go off of that.
     //
     // there's a delay of 3 seconds since thats about how long the previous way took to complete i
@@ -461,10 +457,6 @@ i32 Supervisor::CheckVSync()
         g_Supervisor.gfxDevice->SwapBuffers();
         SDL_Delay(16);
     }
-
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
-    return 0;
-#endif
 
     if (g_GameWindow.window)
     {

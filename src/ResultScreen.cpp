@@ -14,7 +14,6 @@
 #include "GameWindow.hpp"
 #include "Rng.hpp"
 #include "SoundPlayer.hpp"
-#include "Touch.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 #include "compress/Lzss.hpp"
@@ -1282,9 +1281,7 @@ ZunResult ResultScreen::HandleReplaySaveKeyboard()
             {
                 interrupt = 19;
             }
-            else if (g_GameManager.globals->numRetries != 0 ||
-                     Touch::WasUsedThisRun()) // it probably goes without saying that the touch mode
-                                              // is wholly incompatible with replays
+            else if (g_GameManager.globals->numRetries != 0)
             {
                 interrupt = 14;
             }

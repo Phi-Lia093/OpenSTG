@@ -15,7 +15,6 @@
 #include "Rng.hpp"
 #include "SoundPlayer.hpp"
 #include "Stage.hpp"
-#include "Touch.hpp"
 #include "ZunMath.hpp"
 #include "dxutil.hpp"
 #include "utils.hpp"
@@ -1196,12 +1195,10 @@ void Player::Die()
     this->invulnerabilityTimer = 0;
     g_SoundPlayer.PlaySoundByIdx(SOUND_PICHUN, 0);
 
-    // touch controls are a bit more tricky to deathbomb since your finger doesn't rest on a key
-    // that you can physically actuate the moment you need to deathbomb, so because im just such
-    // a nice person there's a 5 frame leniency for touch users (ONLY FOR IF YOU BOMBED WITH
-    // TOUCH!!!!!)
-    this->respawnTimer = g_Player.shooterData->initialRespawnTimer +
-                         (Touch::WasUsedThisRun() ? Touch::DEATHBOMB_TOLERANCE : 0);
+    // The ported game added a few frames of leniency here for touch-screen controls, where a
+    // finger cannot rest on a key the way a keyboard player's can. There is no touch input
+    // in this build, so the plain timer is used.
+    this->respawnTimer = g_Player.shooterData->initialRespawnTimer;
 }
 
 i32 Player::HandlePlayerInputs()
@@ -1214,10 +1211,6 @@ i32 Player::HandlePlayerInputs()
     f32 optionOffsetY;
     f32 horizontalSpeed;
     f32 verticalSpeed;
-
-    f32 touchDx;
-    f32 touchDy;
-    bool touchFocus;
 
     horizontalSpeed = 0.0f;
     verticalSpeed = 0.0f;
@@ -1334,145 +1327,6 @@ i32 Player::HandlePlayerInputs()
         }
     }
 
-    if (Touch::GetPlayerDelta(&touchDx, &touchDy))
-    {
-        f32 focusRatio = 1.0f;
-        if (this->isFocus && this->shooterData && this->shooterData->speed != 0.0f)
-        {
-            focusRatio = this->shooterData->speedFocus / this->shooterData->speed;
-        }
-
-        f32 reqGameDx = touchDx * focusRatio;
-        f32 reqGameDy = touchDy * focusRatio;
-
-        f32 minX = g_GameManager.playerMovementAreaTopLeftPos.x;
-        f32 maxX =
-            g_GameManager.playerMovementAreaTopLeftPos.x + g_GameManager.playerMovementAreaSize.x;
-        f32 minY = g_GameManager.playerMovementAreaTopLeftPos.y;
-        f32 maxY =
-            g_GameManager.playerMovementAreaTopLeftPos.y + g_GameManager.playerMovementAreaSize.y;
-
-        f32 targetX = this->pos.x + reqGameDx;
-        f32 targetY = this->pos.y + reqGameDy;
-
-        if (targetX < minX)
-        {
-            reqGameDx = minX - this->pos.x;
-        }
-        else if (targetX > maxX)
-        {
-            reqGameDx = maxX - this->pos.x;
-        }
-
-        if (targetY < minY)
-        {
-            reqGameDy = minY - this->pos.y;
-        }
-        else if (targetY > maxY)
-        {
-            reqGameDy = maxY - this->pos.y;
-        }
-
-        if (focusRatio != 0.0f)
-        {
-            Touch::SetPlayerDelta(reqGameDx / focusRatio, reqGameDy / focusRatio);
-        }
-
-        f32 hx = this->horizontalMovementSpeedMultiplierDuringBomb *
-                 g_Supervisor.effectiveFramerateMultiplier;
-        f32 vy = this->verticalMovementSpeedMultiplierDuringBomb *
-                 g_Supervisor.effectiveFramerateMultiplier;
-
-        f32 requestedHorizontalSpeed = hx != 0.0f ? reqGameDx / hx : 0.0f;
-        f32 requestedVerticalSpeed = vy != 0.0f ? reqGameDy / vy : 0.0f;
-
-        f32 currentSpeedSq = requestedHorizontalSpeed * requestedHorizontalSpeed +
-                             requestedVerticalSpeed * requestedVerticalSpeed;
-
-        f32 maxSpeed = this->isFocus ? this->shooterData->speedFocus : this->shooterData->speed;
-
-        if (currentSpeedSq > maxSpeed * maxSpeed && currentSpeedSq > 0.0f)
-        {
-            f32 currentSpeed = sqrtf(currentSpeedSq);
-            horizontalSpeed = (requestedHorizontalSpeed / currentSpeed) * maxSpeed;
-            verticalSpeed = (requestedVerticalSpeed / currentSpeed) * maxSpeed;
-        }
-        else
-        {
-            horizontalSpeed = requestedHorizontalSpeed;
-            verticalSpeed = requestedVerticalSpeed;
-        }
-
-        f32 consumedGameDx = 0.0f;
-        f32 consumedGameDy = 0.0f;
-
-        if (hx != 0.0f)
-        {
-            consumedGameDx = horizontalSpeed * hx;
-        }
-        if (vy != 0.0f)
-        {
-            consumedGameDy = verticalSpeed * vy;
-        }
-
-        if (focusRatio != 0.0f)
-        {
-            if (currentSpeedSq > maxSpeed * maxSpeed && currentSpeedSq > 0.0f)
-            {
-                f32 consumeX = (hx != 0.0f) ? consumedGameDx / focusRatio : touchDx;
-                f32 consumeY = (vy != 0.0f) ? consumedGameDy / focusRatio : touchDy;
-                Touch::ConsumePlayerDelta(consumeX, consumeY);
-            }
-            else
-            {
-                Touch::SetPlayerDelta(0.0f, 0.0f);
-            }
-        }
-
-        this->playerDirection = MOVEMENT_NONE;
-
-        // this is actually pretty useless since playerdirection handling is above which we
-        // completely ignored in the touch handling path. the actual part that handles what
-        // direction the playersprite faces is below
-        const f32 dirDeadzone = 0.01f;
-        bool left = touchDx < -dirDeadzone;
-        bool right = touchDx > dirDeadzone;
-        bool up = touchDy < -dirDeadzone;
-        bool down = touchDy > dirDeadzone;
-
-        if (up)
-        {
-            this->playerDirection = MOVEMENT_UP;
-            if (left)
-            {
-                this->playerDirection = MOVEMENT_UP_LEFT;
-            }
-            else if (right)
-            {
-                this->playerDirection = MOVEMENT_UP_RIGHT;
-            }
-        }
-        else if (down)
-        {
-            this->playerDirection = MOVEMENT_DOWN;
-            if (left)
-            {
-                this->playerDirection = MOVEMENT_DOWN_LEFT;
-            }
-            else if (right)
-            {
-                this->playerDirection = MOVEMENT_DOWN_RIGHT;
-            }
-        }
-        else if (left)
-        {
-            this->playerDirection = MOVEMENT_LEFT;
-        }
-        else if (right)
-        {
-            this->playerDirection = MOVEMENT_RIGHT;
-        }
-    }
 
     if (horizontalSpeed < 0.0f && this->previousHorizontalSpeed >= 0.0f)
     {
@@ -1836,10 +1690,9 @@ void Player::UpdateBorderAndBombState()
             {
                 if (this->playerState == PLAYER_STATE_DEAD)
                 {
-                    i32 minRequiredTimer = (Touch::WasUsedThisRun() && !Touch::UsedTouchToBomb())
-                                               ? Touch::DEATHBOMB_TOLERANCE
-                                               : 0;
-                    if (this->respawnTimer <= minRequiredTimer)
+                    // The ported game gave touch players a few frames of extra leniency
+                    // here; without touch input there is nothing to allow for.
+                    if (this->respawnTimer <= 0)
                     {
                         return;
                     }

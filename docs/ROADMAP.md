@@ -198,6 +198,28 @@ byte-code path.
 
 ---
 
+## Removed: mobile targets
+
+Done before the stages above, because dead platform code is a hazard for everything that
+follows.
+
+The upstream port reached Android, iOS, macOS and the web, and carried the machinery for
+each: an OpenGL ES path alongside desktop OpenGL, a touch-screen control scheme, and
+per-platform file locations. This build is Windows only, so that code was removed rather
+than left to rot:
+
+- `Touch.cpp` and `Touch.hpp`, the touch control scheme, along with the finger events in
+  `main.cpp` and the drag-movement handling in `Player`. Movement now comes from the
+  keyboard or a gamepad only.
+- The iOS and Emscripten branches in the renderer, the window setup and `CheckVSync`.
+- The OpenGL ES shader header and the `glClearDepthf` alternates: the shaders are GLSL
+  3.30 core unconditionally.
+
+Choosing between targets at compile time is what let these paths stay half-tested. With one
+target there is one path.
+
+---
+
 ## Working notes
 
 - **Keep the game playable.** Each stage should end with a build that runs. The value of

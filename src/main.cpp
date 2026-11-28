@@ -16,7 +16,6 @@
 #include "ResultScreen.hpp"
 #include "SoundPlayer.hpp"
 #include "Supervisor.hpp"
-#include "Touch.hpp"
 #include "ZunResult.hpp"
 #include "dxutil.hpp"
 
@@ -111,7 +110,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
         }
         while (g_SoundPlayer.ProcessQueues())
             ;
-        Touch::CancelTouches();
         g_GameWindow.isAppActive = 0;
         SDL_ShowCursor();
         break;
@@ -136,16 +134,6 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
                 g_Supervisor.controller = nullptr;
             }
         }
-        break;
-    case SDL_EVENT_FINGER_DOWN:
-        Touch::FingerDown(event->tfinger);
-        break;
-    case SDL_EVENT_FINGER_CANCELED:
-    case SDL_EVENT_FINGER_UP:
-        Touch::FingerUp(event->tfinger);
-        break;
-    case SDL_EVENT_FINGER_MOTION:
-        Touch::FingerMotion(event->tfinger);
         break;
     case SDL_EVENT_QUIT:
         return SDL_APP_SUCCESS;

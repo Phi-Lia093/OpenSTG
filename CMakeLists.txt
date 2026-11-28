@@ -8,13 +8,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Builds 東方妖々夢 on Windows against desktop OpenGL.
 #
-# The upstream port also targets Android, iOS, macOS and Emscripten. Those require the
-# vendored SDL submodules and each platform's own toolchain, and none of them are part of
-# this build, so the configuration here covers Windows only: GL 3.3 core through SDL,
-# linked against opengl32, with the SDL packages taken from .tools.
+# The upstream port also targeted Android, iOS, macOS and Emscripten through OpenGL ES. Those
+# targets are gone, along with the GLES code paths: the configuration here is Windows only,
+# with GL 3.3 core through SDL and the static SDL archives from .tools.
 #
-# Assets (th07.dat, thbgm.dat, msgothic.ttc) sit next to the executable rather than being
-# embedded, which is what TH_EXTERNAL_ASSETS selects.
+# The game's data sits next to the executable as th07.data/ and thbgm.dat. The icon, a
+# version record and the text font are compiled into the executable as resources.
 
 set(SOURCES
     src/AnmManager.cpp
@@ -47,7 +46,6 @@ set(SOURCES
     src/Stage.cpp
     src/Supervisor.cpp
     src/TextHelper.cpp
-    src/Touch.cpp
     src/main.cpp
     src/AssetStore.cpp
     src/ConfigFile.cpp
@@ -105,10 +103,9 @@ endif()
 
 target_include_directories(th07 PRIVATE src "${SDL_STATIC_ROOT}/include")
 
-# Assets are read from the working directory at runtime.
-target_compile_definitions(th07 PRIVATE TH_EXTERNAL_ASSETS)
-
-# The shaders and the context setup switch on USING_GL for a desktop core profile.
+# USING_GL selects the desktop OpenGL path in the renderer: GLSL 3.30 core in place of
+# GLSL ES, and a desktop context in place of an ES one. GLES.hpp sets it too, for the
+# translation units that do not see these definitions.
 target_compile_definitions(th07 PRIVATE USING_GL)
 
 # SDL3_STATIC selects the static declarations in SDL's headers.

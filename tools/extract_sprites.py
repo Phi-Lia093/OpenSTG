@@ -62,6 +62,17 @@ def convert(name: str) -> int:
         script_pairs = list(struct.unpack_from(f'<{num_scripts * 2}i', data,
                                                table + num_sprites * 4))
 
+        # Running twice would read the already-shifted table and write nonsense: the first
+        # `num_sprites` words would be script pairs, and the sprite offsets they are taken for
+        # point anywhere. A sprite offset always falls inside the entry and before the first
+        # script, which is what tells the two layouts apart.
+        first_script = script_pairs[1] if num_scripts else 1 << 30
+        already_moved = num_sprites > 0 and (
+            min(sprite_offsets) > first_script or
+            max(sprite_offsets) >= first_script)
+        if already_moved:
+            continue
+
         # Write the table as TOML.
         lines = [
             '# Sprite rectangles in texture pixels: x, y, width, height.',

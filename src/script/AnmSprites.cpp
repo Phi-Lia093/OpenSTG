@@ -28,8 +28,10 @@ bool ReadAsset(const std::string &path, std::string &out)
 
 std::string FileName(const char *anmName, i32 entryIndex)
 {
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer), "%s_%d.spr.toml", anmName, (int)entryIndex);
+    // One directory per animation holds its textures and sprite tables together, so the
+    // files can be found and compared without sorting through the archive's own.
+    char buffer[160];
+    snprintf(buffer, sizeof(buffer), "anm/%s/sprites_%d.toml", anmName, (int)entryIndex);
     return buffer;
 }
 

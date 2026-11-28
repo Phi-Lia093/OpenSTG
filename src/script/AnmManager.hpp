@@ -4,6 +4,7 @@
 
 #include <SDL3/SDL.h>
 #include <assert.h>
+#include <string>
 
 #include "core/GameWindow.hpp"
 #include "core/ZunColor.hpp"
@@ -154,7 +155,10 @@ struct AnmManager
                               const char *str, ...);
     i32 ExecuteScript(AnmVm *vm);
     void Flush();
-    i32 LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset, u32 ownsMemory);
+    // `entryIndex` is which entry of the file this is, needed to find its sprite table: that
+    // table is a TOML file beside the animation rather than a region inside it.
+    i32 LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset, u32 ownsMemory,
+                i32 entryIndex);
     i32 LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset);
     void LoadSprite(u32 spriteIdx, AnmLoadedSprite *sprite);
     ZunResult LoadSurface(i32 surfaceIdx, const char *path);
@@ -391,6 +395,13 @@ struct AnmManager
     GfxTextureHandle textures[MAX_TEXTURES];
     void *imageDataArray[256];
     char *textureNames[MAX_TEXTURES];
+    // The file currently being loaded, without its extension. LoadAnm finds an entry's sprite
+    // table by it, since the table is a separate file rather than a region of the animation.
+    //
+    // A plain array rather than std::string because the constructor memsets the whole object:
+    // a std::string here would have its internals zeroed behind its back, and every use would
+    // then read a pointer the class no longer owns.
+    char currentAnmName[64];
     i32 loadedSpriteCount;
     AnmRawInstr *scripts[MAX_SCRIPTS_SPRITES];
     i32 spriteIndices[MAX_SCRIPTS_SPRITES];

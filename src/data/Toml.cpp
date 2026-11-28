@@ -208,6 +208,43 @@ bool ParseArray(const std::string &s, size_t &pos, Value &value)
 
 } // namespace
 
+Value::~Value()
+{
+    delete tables;
+}
+
+Value::Value(const Value &other)
+    : type(other.type), boolean(other.boolean), integer(other.integer), number(other.number),
+      text(other.text), integers(other.integers), strings(other.strings), tables(nullptr)
+{
+    if (other.tables)
+    {
+        // A table array is owned, so the copy has to own its own: sharing the pointer would
+        // free one document's tables when another was destroyed.
+        tables = new std::vector<Document>(*other.tables);
+    }
+}
+
+Value &Value::operator=(const Value &other)
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+    Value copy(other);
+    type = copy.type;
+    boolean = copy.boolean;
+    integer = copy.integer;
+    number = copy.number;
+    text = copy.text;
+    integers = copy.integers;
+    strings = copy.strings;
+    delete tables;
+    tables = copy.tables;
+    copy.tables = nullptr;
+    return *this;
+}
+
 bool Document::Has(const std::string &key) const
 {
     return values.find(key) != values.end();
@@ -219,10 +256,25 @@ const Value *Document::Get(const std::string &key) const
     return it == values.end() ? nullptr : &it->second;
 }
 
+const std::vector<Document> *Document::Tables(const std::string &key) const
+{
+    const Value *value = Get(key);
+    if (!value || value->type != ValueType::TableArray || !value->tables)
+    {
+        return nullptr;
+    }
+    return value->tables;
+}
+
 bool Parse(const std::string &text, Document &document, std::string &error)
 {
     document.values.clear();
     std::string table;
+
+    // Where keys are collected. A [[table]] header appends an element to that array and
+    // makes it the target, so the keys under it belong to the new element rather than to the
+    // document as a whole. A plain [table] header returns to the document.
+    Document *target = &document;
 
     size_t lineNumber = 0;
     size_t pos = 0;
@@ -246,6 +298,50 @@ bool Parse(const std::string &text, Document &document, std::string &error)
         // A table header is the whole line, comments already stripped.
         if (line[0] == '[')
         {
+            const bool isArray = line.size() > 1 && line[1] == '[';
+
+            if (isArray)
+            {
+                const size_t close = line.find("]]");
+                if (close == std::string::npos)
+                {
+                    error = "line " + std::to_string(lineNumber) +
+                            ": unterminated array-of-tables header";
+                    return false;
+                }
+                std::string rest = Trim(line.substr(close + 2));
+                StripComment(rest);
+                if (!Trim(rest).empty())
+                {
+                    error = "line " + std::to_string(lineNumber) +
+                            ": trailing text after array header";
+                    return false;
+                }
+                table = Trim(line.substr(2, close - 2));
+                if (table.empty())
+                {
+                    error = "line " + std::to_string(lineNumber) + ": empty table name";
+                    return false;
+                }
+
+                // Each [[table]] starts a new element; the keys that follow belong to it.
+                Value &array = document.values[table];
+                if (array.type == ValueType::None)
+                {
+                    array.type = ValueType::TableArray;
+                    array.tables = new std::vector<Document>();
+                }
+                if (array.type != ValueType::TableArray || !array.tables)
+                {
+                    error = "line " + std::to_string(lineNumber) + ": " + table +
+                            " is not an array of tables";
+                    return false;
+                }
+                array.tables->push_back(Document{});
+                target = &array.tables->back();
+                continue;
+            }
+
             const size_t close = line.find(']');
             if (close == std::string::npos)
             {
@@ -265,6 +361,7 @@ bool Parse(const std::string &text, Document &document, std::string &error)
                 error = "line " + std::to_string(lineNumber) + ": empty table name";
                 return false;
             }
+            target = &document;
             continue;
         }
 
@@ -291,7 +388,11 @@ bool Parse(const std::string &text, Document &document, std::string &error)
             return false;
         }
 
-        const std::string fullKey = table.empty() ? key : table + "." + key;
+        // Inside a [[table]] element the keys are flat: the element is already the table, so
+        // prefixing them again would make Get("rect") miss a value stored as "sprite.rect".
+        const bool insideElement = target != &document;
+        const std::string fullKey =
+            (table.empty() || insideElement) ? key : table + "." + key;
 
         Value value;
         if (raw[0] == '"')
@@ -344,7 +445,9 @@ bool Parse(const std::string &text, Document &document, std::string &error)
             }
         }
 
-        document.values[fullKey] = value;
+        // Keys go to whichever document is current: the file itself for a plain [table], or
+        // the element opened by the last [[table]].
+        target->values[fullKey] = value;
     }
 
     return true;

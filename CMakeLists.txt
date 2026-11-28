@@ -42,6 +42,7 @@ set(SOURCES
     src/main.cpp
     src/render/GL.cpp
     src/script/AnmManager.cpp
+    src/script/AnmSprites.cpp
     src/script/AnmVm.cpp
     src/script/EclManager.cpp
     src/script/EnemyEclInstr.cpp

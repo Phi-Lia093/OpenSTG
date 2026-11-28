@@ -17,6 +17,7 @@
 #include "core/ZunMath.hpp"
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
+#include "script/AnmSprites.hpp"
 
 AnmManager *g_AnmManager;
 
@@ -177,6 +178,23 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     u32 ownsMemory;
     AnmRawEntry *entry;
 
+    // An animation with a Lua form is loaded from anm/<name>/; anything else comes from the
+    // binary file below. The sprite table lives beside either form, named after the file.
+    std::string anmName = path;
+    const size_t slash = anmName.find_last_of('/');
+    if (slash != std::string::npos)
+    {
+        anmName = anmName.substr(slash + 1);
+    }
+    if (anmName.size() > 4 && anmName.compare(anmName.size() - 4, 4, ".anm") == 0)
+    {
+        anmName.resize(anmName.size() - 4);
+    }
+    // The constructor memsets the object, so this buffer is plain bytes and copying into it
+    // is the only safe way to fill it.
+    strncpy(this->currentAnmName, anmName.c_str(), sizeof(this->currentAnmName) - 1);
+    this->currentAnmName[sizeof(this->currentAnmName) - 1] = '\0';
+
     entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
     ownsMemory = 1;
     i32 startIdx = anmIdx;
@@ -187,7 +205,8 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     }
     while (true)
     {
-        res = LoadAnm(anmIdx, entry, spriteIdxOffset, ownsMemory);
+        // The entry's position in the file, which is how its sprite table is named.
+        res = LoadAnm(anmIdx, entry, spriteIdxOffset, ownsMemory, anmIdx - startIdx);
         if (res < 0)
         {
             this->anmFiles[startIdx].childCount = anmIdx - startIdx;
@@ -205,7 +224,8 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     }
 }
 
-i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset, u32 ownsMemory)
+i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset,
+                        u32 ownsMemory, i32 entryIndex)
 {
     char *name;
     AnmRawSprite *rawSprite;
@@ -269,10 +289,27 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
         this->textureHeights[textureIdx] ? this->textureHeights[textureIdx] : data->height;
 
     data->spriteIdxOffset = spriteIdxOffset;
-    curSprite = data->dataOffsets;
-    for (i = 0; i < data->numSprites; i++, curSprite++)
+
+    // The table is a TOML file beside the animation now. The values are the same ones the
+    // binary table held, so the scaling and indexing below are unchanged; only where they
+    // come from differs.
+    std::vector<AnmRawSprite> spriteTable;
+    std::string spriteError;
+    if (!AnmSprites::Load(this->currentAnmName, entryIndex, spriteTable, spriteError))
     {
-        rawSprite = (AnmRawSprite *)((u8 *)data + *curSprite);
+        g_GameErrorContext.Fatal("スプライト表を読み込めません: %s\n", spriteError.c_str());
+        return ZUN_ERROR;
+    }
+    if ((i32)spriteTable.size() != data->numSprites)
+    {
+        g_GameErrorContext.Fatal("スプライト数が一致しません: %d と %d\n", data->numSprites,
+                                 (int)spriteTable.size());
+        return ZUN_ERROR;
+    }
+
+    for (i = 0; i < data->numSprites; i++)
+    {
+        rawSprite = &spriteTable[i];
         loadedSprite.sourceFileIndex = data->textureIdx;
         loadedSprite.cols = (f32)texWidth / (f32)data->width;
         loadedSprite.rows = (f32)texHeight / (f32)data->height;
@@ -295,6 +332,9 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
         }
         LoadSprite(rawSprite->id + spriteIdxOffset, &loadedSprite);
     }
+    // The sprite entries no longer occupy the front of the offset table, so it now holds only
+    // the script pairs: (index, offset) for each, starting at the beginning.
+    curSprite = data->dataOffsets;
     for (i = 0; i < data->numScripts; i++, curSprite += 2)
     {
         if (*curSprite + spriteIdxOffset >= ARRAY_SIZE_SIGNED(this->sprites))
@@ -338,11 +378,15 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
         {
             ReleaseAnm(uvX);
         }
-        for (i = 0; i < rawEntry->numSprites; i++, afterHdr++)
+        // The offset table holds only the script pairs now; the sprite rectangles live in a
+        // separate file and their slots are addressed by index, since ids run 0..n-1.
+        for (i = 0; i < rawEntry->numSprites; i++)
         {
-            spriteIdx = (i32 *)((u8 *)rawEntry + *afterHdr);
-            memset(&this->sprites[*spriteIdx + spriteIdxOffset], 0, sizeof(AnmLoadedSprite));
-            this->sprites[*spriteIdx + spriteIdxOffset].sourceFileIndex = -1;
+            if (i + spriteIdxOffset < ARRAY_SIZE_SIGNED(this->sprites))
+            {
+                memset(&this->sprites[i + spriteIdxOffset], 0, sizeof(AnmLoadedSprite));
+                this->sprites[i + spriteIdxOffset].sourceFileIndex = -1;
+            }
         }
         for (i = 0; i < rawEntry->numScripts; i++, afterHdr += 2)
         {

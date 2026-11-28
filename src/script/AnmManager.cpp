@@ -17,6 +17,7 @@
 #include "core/ZunMath.hpp"
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
+#include "script/AnmScripts.hpp"
 #include "script/AnmSprites.hpp"
 
 AnmManager *g_AnmManager;
@@ -334,6 +335,24 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
     }
     // The sprite entries no longer occupy the front of the offset table, so it now holds only
     // the script pairs: (index, offset) for each, starting at the beginning.
+    // The streams are a file of their own now; the entry's offsets index it. Everything else
+    // in the entry stays, and the pointers stored below outlive this call, so the buffer is
+    // held until ReleaseAnm.
+    u32 scriptSize = 0;
+    std::string scriptError;
+    u8 *scriptData = nullptr;
+    if (data->numScripts > 0)
+    {
+        scriptData = AnmScripts::Load(this->currentAnmName, entryIndex, &scriptSize, scriptError);
+        if (!scriptData)
+        {
+            g_GameErrorContext.Fatal("スクリプトを読み込めません: %s\n", scriptError.c_str());
+            return ZUN_ERROR;
+        }
+    }
+    // Held on the entry so ReleaseAnm can free it: the scripts[] pointers below point into it
+    // and are dereferenced every frame.
+    this->anmFiles[textureIdx].scriptData = scriptData;
     curSprite = data->dataOffsets;
     for (i = 0; i < data->numScripts; i++, curSprite += 2)
     {
@@ -346,7 +365,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
         {
             id = *curSprite;
         }
-        this->scripts[*curSprite + spriteIdxOffset] = (AnmRawInstr *)((u8 *)data + curSprite[1]);
+        this->scripts[*curSprite + spriteIdxOffset] = (AnmRawInstr *)(scriptData + curSprite[1]);
         this->spriteIndices[*curSprite + spriteIdxOffset] = spriteIdxOffset;
     }
     this->anmFiles[textureIdx].raw = data;
@@ -394,7 +413,20 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
             this->spriteIndices[*afterHdr + spriteIdxOffset] = 0;
         }
         this->anmFiles[anmIdx].spriteIndexOffset = 0;
+        // The name pointer points into the block released below, so it goes first: leaving it
+        // behind leaves a pointer that any later reader would follow into freed memory.
+        if (rawEntry->textureIdx >= 0 && rawEntry->textureIdx < MAX_TEXTURES)
+        {
+            this->textureNames[rawEntry->textureIdx] = NULL;
+        }
         ReleaseTexture(rawEntry->textureIdx);
+        // The streams are a separate allocation now, so they go with the entry that owned
+        // them. Leaving them behind would leak a copy of every animation's code on each load.
+        if (this->anmFiles[anmIdx].scriptData)
+        {
+            free(this->anmFiles[anmIdx].scriptData);
+            this->anmFiles[anmIdx].scriptData = NULL;
+        }
         if (rawEntry->ownsMemory)
         {
             free(rawEntry);

@@ -99,6 +99,16 @@ executable, through `AssetStore`. Files are addressed by bare name — the game 
 `data/ascii.anm` and the directory holds `ascii.anm` — which is how the original archive
 was laid out.
 
+That directory is assembled from two sources at build time. `assets/` — modernised content
+committed to the repository — is copied first. The original archive is then extracted over
+it, skipping paths `assets/` already provides. So a file moves from "derived from the
+archive" to "committed in `assets/`" by appearing there, with no change to the build, and
+the archive dependency shrinks as the modernisation progresses.
+
+`assets/` holds only what the project owns or has finished reworking. Original game data
+that is still taken verbatim stays out, so the repository does not carry a second copy of
+what the archive already defines.
+
 This replaced the original PBG4 archive. `AssetStore` keeps a container switch so a ZIP can
 be read later without callers changing.
 

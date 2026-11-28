@@ -76,6 +76,7 @@ is a path from `src/`, so `#include "core/Supervisor.hpp"`.
 | `src/data/` | `AssetStore`, `FileSystem`, the configuration and its TOML reader, embedded resources, `ReplayManager` |
 | `src/render/` | `ZunGraphics` interface and the `GLGraphics` implementation |
 | `src/support/` | Self-contained helpers: LZSS, Shift-JIS conversion, `miniaudio.h` |
+| `assets/` | Modernised content, committed, merged into the build ahead of the archive |
 | `tools/` | Build scripts, the resource template and the icon |
 | `docs/` | This documentation |
 

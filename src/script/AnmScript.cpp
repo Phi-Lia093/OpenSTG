@@ -396,24 +396,27 @@ bool Exists(const char *anmName)
 
 bool ShouldUseLua(i32 slot)
 {
-    static const i32 wanted = [] {
-        const char *setting = SDL_getenv("TH07_ANM_LUA_SLOT");
-        return setting ? (i32)atoi(setting) : -1;
+    // TH07_ANM_LUA_SLOT names one slot, TH07_ANM_LUA_FIRST and _LAST name a range, so more than
+    // one stream can be compared at a time while every other slot keeps the binary path.
+    static const i32 first = [] {
+        const char *value = SDL_getenv("TH07_ANM_LUA_FIRST");
+        if (!value)
+        {
+            value = SDL_getenv("TH07_ANM_LUA_SLOT");
+        }
+        return value ? (i32)atoi(value) : -1;
     }();
 
-    // Recorded for the menu's slots only. A slot that never matches looks exactly like a slot
-    // that is never asked about, and the traffic from the small UI animations drowns it out.
-    {
-        static int shown = 0;
-        if (shown < 20 && wanted >= 0 && slot >= 0x900)
+    static const i32 last = [] {
+        const char *value = SDL_getenv("TH07_ANM_LUA_LAST");
+        if (!value)
         {
-            AnmVmDebug::Note("slot %d asked, wanted %d -> %d", (int)slot, (int)wanted,
-                             (int)(slot == wanted));
-            shown++;
+            value = SDL_getenv("TH07_ANM_LUA_SLOT");
         }
-    }
+        return value ? (i32)atoi(value) : -1;
+    }();
 
-    return wanted >= 0 && slot == wanted;
+    return first >= 0 && slot >= first && slot <= last;
 }
 
 bool Start(AnmVm *vm, const char *anmName, i32 entryIndex, i32 scriptIndex)
@@ -475,16 +478,19 @@ i32 Run(AnmVm *vm, i32 time)
         const i32 wanted = (i32)vm->pendingInterrupt;
         vm->pendingInterrupt = 0;
 
-        bool entered = false;
-        lua_rawgeti(g_state.lua, LUA_REGISTRYINDEX, g_state.animationRef);
-        lua_geti(g_state.lua, -1, running->entryIndex);
-        lua_geti(g_state.lua, -1, running->scriptIndex);
-        // A stream with no label of that number falls back to -1, as the interpreter did.
-        entered = BuildCoroutine(vm, running, wanted) || BuildCoroutine(vm, running, -1);
-        lua_pop(g_state.lua, 3);
+        // Two attempts, and the second is the fallback the interpreter used: a label numbered -1
+        // accepted an interrupt no other label matched. BuildCoroutine leaves the main state's
+        // stack as it found it, so trying twice in a row is safe.
+        bool entered = BuildCoroutine(vm, running, wanted);
+        if (!entered)
+        {
+            entered = BuildCoroutine(vm, running, -1);
+        }
 
         if (!entered)
         {
+            AnmVmDebug::Note("interrupt %d: slot %d has no such label", (int)wanted,
+                             (int)vm->anmFileIdx);
             return 0;
         }
         vm->isStopped = 0;
@@ -492,8 +498,7 @@ i32 Run(AnmVm *vm, i32 time)
         AnmVmDebug::Note("interrupt %d resumes slot %d at a label", (int)wanted,
                          (int)vm->anmFileIdx);
     }
-
-    if (!running->thread)
+if (!running->thread)
     {
         return 1;
     }

@@ -30,7 +30,7 @@ plain files, strings are externalized, and the coordinate system is not fixed at
 **Result.** Assets are loose files in `th07.data/` next to the executable. `AssetStore`
 replaces the archive: it probes for `th07.data/` and reads files from it by bare name, which
 is how the archive addressed them. The PBG4 reader, its file abstraction and the LZSS path
-that unpacked the archive are gone; LZSS itself remains under `src/compress/` because replay
+that unpacked the archive are gone; LZSS itself remains under `src/support/` because replay
 and savedata files still use it.
 
 `tools/extract_assets.py` produces the directory from the original archive with thdat, and
@@ -217,6 +217,25 @@ than left to rot:
 
 Choosing between targets at compile time is what let these paths stay half-tested. With one
 target there is one path.
+
+---
+
+## Sources reorganised
+
+The sources were flat in `src/`, 72 files in one directory, which made it impossible to see
+where a new file belonged. They are now grouped by role — `core`, `game`, `script`, `ui`,
+`audio`, `data`, `render`, `support` — with each header next to its implementation.
+
+Two renames came out of the same pass:
+
+- `dxutil.hpp` was a copy of a Microsoft DirectX SDK header, but nothing in it had ever
+  touched DirectX: it held four pointer-cleanup macros. It is `core/memory.hpp` now.
+- `Gles.cpp` and `GLWin32.hpp` were three files for one renderer, split because the port
+  once supported OpenGL ES. They are `render/GL.hpp` and `render/GL.cpp`, and the class is
+  `GLGraphics`.
+
+Includes are written as paths from `src/`, so one include directory in the build still
+covers everything.
 
 ---
 

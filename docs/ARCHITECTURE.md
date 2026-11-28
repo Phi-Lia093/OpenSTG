@@ -33,7 +33,7 @@ Two things are worth keeping in mind throughout:
               |
          ZunGraphics                  renderer interface
               |
-        GlesGraphics                  OpenGL 3.3 implementation
+        GLGraphics                    OpenGL 3.3 implementation
 ```
 
 ### Driver
@@ -64,9 +64,7 @@ Each resource type has one manager, and they are global singletons:
 
 `ZunGraphics` is an interface that models the Direct3D 8 device the original was written
 against: transform matrices, texture stage state, render state, clear, viewport, draw
-primitives. `GlesGraphics` implements it on OpenGL 3.3 core. The name is a leftover from
-the upstream port, which used OpenGL ES to reach Android, iOS and the web; this build is
-Windows only, so the class is desktop GL throughout and the GLES code paths are gone.
+primitives. `GLGraphics` implements it on OpenGL 3.3 core. Both live in `src/render/`.
 
 The D3D model shows up directly in the shader, which reproduces the fixed-function
 pipeline rather than replacing it:
@@ -81,9 +79,10 @@ Two vertex layouts come out of this: screen-space quads for sprites and HUD, and
 world-space triangles for the stage background, which go through model, view and
 projection matrices.
 
-On Windows, `opengl32.dll` exports only OpenGL 1.1, so `GLWin32.hpp` declares the 3.3
-entry points as function pointers and resolves them through `SDL_GL_GetProcAddress` once
-the context exists.
+On Windows, `opengl32.dll` exports only OpenGL 1.1, so `render/GL.hpp` declares the 3.3
+entry points as function pointers and `GL.cpp` resolves them through
+`SDL_GL_GetProcAddress` once the context exists. The declarations and the OpenGL tokens the
+1.1 header lacks are in the same header, since nothing outside the renderer uses them.
 
 The GL context itself is created explicitly in `GameWindow.cpp`. In SDL3 the
 `SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN` property only marks a window as GL-capable; it
@@ -166,7 +165,7 @@ parsing, error reporting, round-tripping and clamping.
 
 ### Text
 
-The game's own text is Shift-JIS, converted to UTF-8 for rendering by `src/sj2utf8/`.
+The game's own text is Shift-JIS, converted to UTF-8 for rendering by `src/support/sj2utf8/`.
 Dialogue and menu strings live in the data files under `th07.data/`.
 
 ## What this means for the planned work

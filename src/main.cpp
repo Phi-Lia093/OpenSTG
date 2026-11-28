@@ -5,19 +5,19 @@
 #include <SDL3/SDL_main.h>
 
 // pull in gameerrorcontext::flush before anmmanager::releasesurfaces
-#include "AnmManager.hpp"
-#include "Chain.hpp"
-#include "Controller.hpp"
-#include "ConfigFile.hpp"
-#include "FileSystem.hpp"
-#include "GameErrorContext.hpp"
-#include "GameManager.hpp"
-#include "GameWindow.hpp"
-#include "ResultScreen.hpp"
-#include "SoundPlayer.hpp"
-#include "Supervisor.hpp"
-#include "ZunResult.hpp"
-#include "dxutil.hpp"
+#include "script/AnmManager.hpp"
+#include "core/Chain.hpp"
+#include "core/Controller.hpp"
+#include "data/ConfigFile.hpp"
+#include "data/FileSystem.hpp"
+#include "core/GameErrorContext.hpp"
+#include "game/GameManager.hpp"
+#include "core/GameWindow.hpp"
+#include "ui/ResultScreen.hpp"
+#include "audio/SoundPlayer.hpp"
+#include "core/Supervisor.hpp"
+#include "core/ZunResult.hpp"
+#include "core/memory.hpp"
 
 static i32 renderRes = RENDER_RESULT_KEEP_RUNNING;
 

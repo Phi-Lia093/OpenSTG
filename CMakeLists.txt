@@ -16,45 +16,45 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # version record and the text font are compiled into the executable as resources.
 
 set(SOURCES
-    src/AnmManager.cpp
-    src/AnmVm.cpp
-    src/AsciiManager.cpp
-    src/BombData.cpp
-    src/BulletManager.cpp
-    src/Chain.cpp
-    src/Controller.cpp
-    src/EclManager.cpp
-    src/EffectManager.cpp
-    src/Ending.cpp
-    src/EnemyEclInstr.cpp
-    src/EnemyManager.cpp
-    src/FileSystem.cpp
-    src/GameErrorContext.cpp
-    src/GameManager.cpp
-    src/GameWindow.cpp
-    src/Gui.cpp
-    src/ItemManager.cpp
-    src/MainMenu.cpp
-    src/MidiOutput.cpp
-    src/MusicRoom.cpp
-    src/Player.cpp
-    src/ReplayManager.cpp
-    src/ResultScreen.cpp
-    src/Rng.cpp
-    src/ScreenEffect.cpp
-    src/SoundPlayer.cpp
-    src/Stage.cpp
-    src/Supervisor.cpp
-    src/TextHelper.cpp
+    src/audio/MidiOutput.cpp
+    src/audio/SoundPlayer.cpp
+    src/core/Chain.cpp
+    src/core/Controller.cpp
+    src/core/GameErrorContext.cpp
+    src/core/GameWindow.cpp
+    src/core/Rng.cpp
+    src/core/Supervisor.cpp
+    src/core/utils.cpp
+    src/data/AssetStore.cpp
+    src/data/ConfigFile.cpp
+    src/data/EmbeddedAssets.cpp
+    src/data/FileSystem.cpp
+    src/data/ReplayManager.cpp
+    src/data/Toml.cpp
+    src/game/BombData.cpp
+    src/game/BulletManager.cpp
+    src/game/EffectManager.cpp
+    src/game/EnemyManager.cpp
+    src/game/GameManager.cpp
+    src/game/ItemManager.cpp
+    src/game/Player.cpp
+    src/game/Stage.cpp
     src/main.cpp
-    src/AssetStore.cpp
-    src/ConfigFile.cpp
-    src/Toml.cpp
-    src/EmbeddedAssets.cpp
-    src/graphics/Gles.cpp
-    src/compress/Lzss.cpp
-    src/sj2utf8/sj2utf8.cpp
-    src/utils.cpp
+    src/render/GL.cpp
+    src/script/AnmManager.cpp
+    src/script/AnmVm.cpp
+    src/script/EclManager.cpp
+    src/script/EnemyEclInstr.cpp
+    src/support/Lzss.cpp
+    src/support/sj2utf8/sj2utf8.cpp
+    src/ui/AsciiManager.cpp
+    src/ui/Ending.cpp
+    src/ui/Gui.cpp
+    src/ui/MainMenu.cpp
+    src/ui/MusicRoom.cpp
+    src/ui/ResultScreen.cpp
+    src/ui/ScreenEffect.cpp
+    src/ui/TextHelper.cpp
 )
 
 # The icon and the text font are embedded in the resource section. The font is looked for in
@@ -102,11 +102,6 @@ if(NOT EXISTS "${SDL_STATIC_ROOT}/lib/SDL3-static.lib")
 endif()
 
 target_include_directories(th07 PRIVATE src "${SDL_STATIC_ROOT}/include")
-
-# USING_GL selects the desktop OpenGL path in the renderer: GLSL 3.30 core in place of
-# GLSL ES, and a desktop context in place of an ES one. GLES.hpp sets it too, for the
-# translation units that do not see these definitions.
-target_compile_definitions(th07 PRIVATE USING_GL)
 
 # SDL3_STATIC selects the static declarations in SDL's headers.
 target_compile_definitions(th07 PRIVATE SDL_STATIC)

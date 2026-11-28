@@ -59,16 +59,20 @@ beside the executable is used as a fallback at runtime if the build had none.
 
 ## Repository layout
 
+Sources are grouped by role. Each header sits next to its implementation, and every include
+is a path from `src/`, so `#include "core/Supervisor.hpp"`.
+
 | Path | Contents |
 | --- | --- |
-| `src/` | Game code: the engine, the managers for each resource type, and the graphics abstraction |
-| `src/AssetStore.cpp` | Reads the game's data files from `th07.data/` |
-| `src/ConfigFile.cpp` | Reads and writes `th07.toml` |
-| `src/Toml.cpp` | A reader for the subset of TOML the settings file uses |
-| `src/EmbeddedAssets.cpp` | Reads resources embedded in the executable; currently the text font |
-| `src/graphics/` | The renderer: `ZunGraphics` interface, its OpenGL implementation, and the Windows GL loader |
-| `src/compress/` | LZSS, used by replay and savedata files |
-| `src/sj2utf8/` | Shift-JIS to UTF-8 conversion for the game's own text tables |
+| `src/main.cpp` | Entry point |
+| `src/core/` | `Supervisor`, `GameWindow`, `Chain`, `Controller`, `Rng`, `utils`, the `Zun*` type headers, and `memory.hpp` (pointer-cleanup macros) |
+| `src/game/` | Gameplay: `GameManager`, `Stage`, `Player`, the enemy, bullet and item managers, effects, bomb data |
+| `src/script/` | The animation and enemy-script layers: `AnmManager`, `AnmVm`, `EclManager`, `EnemyEclInstr` |
+| `src/ui/` | `Gui`, `AsciiManager`, the menus, the result screen, `MusicRoom`, `Ending`, `TextHelper` |
+| `src/audio/` | `SoundPlayer`, `MidiOutput` |
+| `src/data/` | `AssetStore`, `FileSystem`, the configuration and its TOML reader, embedded resources, `ReplayManager` |
+| `src/render/` | `ZunGraphics` interface and the `GLGraphics` implementation |
+| `src/support/` | Self-contained helpers: LZSS, Shift-JIS conversion, `miniaudio.h` |
 | `tools/` | Build scripts, the resource template and the icon |
 | `docs/` | This documentation |
 

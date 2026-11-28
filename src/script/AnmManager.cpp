@@ -21,7 +21,6 @@
 #include "script/AnmOp.hpp"
 #include "script/AnmScript.hpp"
 #include "script/AnmVmDebug.hpp"
-#include "script/AnmScripts.hpp"
 
 AnmManager *g_AnmManager;
 
@@ -304,17 +303,9 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
         LoadSprite(rawSprite.id + spriteIdxOffset, &loadedSprite);
     }
 
-    // The streams are no longer read from a file of their own: each animation's instructions are
-    // the Lua functions in its animation.lua, and a VM reaches them by the slot its entry gives
-    // it. What is still needed here is only which slot each stream occupies, which the
-    // description holds. A missing scripts_N.bin is therefore not an error -- it is not read.
-    u32 scriptSize = 0;
-    std::string scriptError;
-    u8 *scriptData = nullptr;
-    if (!description.scripts.empty())
-    {
-        scriptData = AnmScripts::Load(this->currentAnmName, entryIndex, &scriptSize, scriptError);
-    }
+    // The instructions are the Lua functions in each animation's animation.lua, reached by slot.
+    // Nothing is read from a separate file, so all that is taken from the description here is
+    // which slot each stream occupies.
 
     for (i32 scriptIdx = 0; scriptIdx < (i32)description.scripts.size(); scriptIdx++)
     {
@@ -328,8 +319,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
         {
             id = script.index;
         }
-        this->scripts[script.index + spriteIdxOffset] =
-            (AnmRawInstr *)(scriptData + script.offset);
+        this->scripts[script.index + spriteIdxOffset] = (AnmRawInstr *)1;
         this->spriteIndices[script.index + spriteIdxOffset] = spriteIdxOffset;
 
         // What this slot names. The Lua form is keyed by animation, entry and stream, none of
@@ -351,7 +341,7 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
         }
     }
 
-    this->anmFiles[textureIdx].scriptData = scriptData;
+
     this->anmFiles[textureIdx].raw = NULL;
     this->anmFiles[textureIdx].spriteIndexOffset = spriteIdxOffset;
     // What this entry occupies, so releasing it later does not need the description, which
@@ -379,8 +369,7 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
 
     // Nothing to release unless something was loaded. The children go first: each entry in
     // the chain owns the slots its own index covers.
-    if (this->anmFiles[anmIdx].raw != NULL || this->anmFiles[anmIdx].scriptData != NULL ||
-        this->anmFiles[anmIdx].spriteCount > 0)
+    if (this->anmFiles[anmIdx].raw != NULL || this->anmFiles[anmIdx].spriteCount > 0)
     {
         uvX = anmIdx + 1;
         for (i = 1; i < this->anmFiles[anmIdx].childCount; i++, uvX++)
@@ -416,10 +405,6 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
             ReleaseTexture(this->anmFiles[anmIdx].textureIdx);
         }
 
-        // The streams are a separate allocation now, so they go with the entry that owned
-        // them; leaving them behind would leak a copy of every animation's code per load.
-        free(this->anmFiles[anmIdx].scriptData);
-        this->anmFiles[anmIdx].scriptData = NULL;
         this->anmFiles[anmIdx].raw = NULL;
         this->anmFiles[anmIdx].spriteCount = 0;
         this->anmFiles[anmIdx].scriptCount = 0;
@@ -1514,456 +1499,9 @@ i32 AnmManager::ExecuteScript(AnmVm *vm)
         goto stop;
     }
 
-    if (vm->pendingInterrupt != 0)
-    {
-        // A pending interrupt is handled before anything else, by the same scan STOP reaches.
-        if (HandleInterrupt(vm))
-        {
-            goto WHY_NOT_JUST_CONTINUE;
-        }
-        goto stop;
-    }
-
-WHY_NOT_JUST_CONTINUE:
-    instr = vm->currentInstruction;
-    while (instr->time <= vm->currentTimeInScript.GetCurrent())
-    {
-        // Instructions that have been lifted run here; anything else falls through to the
-        // switch below, so the set can grow one instruction at a time.
-        switch (AnmOp::Run(vm, instr))
-        {
-        case OpResult::Stop:
-            return 1;
-        case OpResult::Restart:
-            goto WHY_NOT_JUST_CONTINUE;
-        case OpResult::EndFrame:
-            goto stop;
-        case OpResult::Next:
-            vm->currentInstruction = (AnmRawInstr *)((u8 *)instr + instr->size);
-            goto WHY_NOT_JUST_CONTINUE;
-        case OpResult::NotHandled:
-            break;
-        }
-
-        switch (instr->opcode)
-        {
-        case ANM_EXIT_HIDE:
-        case ANM_EXIT_HIDE2:
-            vm->visible = 0;     case ANM_EXIT:
-            vm->currentInstruction = NULL;
-            return 1;
-        case ANM_SET_ACTIVE_SPRITE:
-            vm->visible = 1;
-            SetActiveSprite(vm, GET_INT_VALUE(0) + this->spriteIndices[vm->anmFileIdx]);
-            vm->timeOfLastSpriteSet = vm->currentTimeInScript.GetCurrent();
-            break;
-        case ANM_SET_SCALE:
-            vm->scale.x = GET_FLOAT_VALUE(0);
-            vm->scale.y = GET_FLOAT_VALUE(1);
-            vm->updateScale = 1;
-            break;
-        case ANM_SET_ALPHA:
-            vm->color.bytes.a = instr->args[0].i & 255;
-            break;
-        case ANM_SET_COLOR:
-            vm->color.color = (vm->color.color & 0xff000000) | (instr->args[0].i & 0xffffff);
-            break;
-        case ANM_JUMP:
-            vm->currentTimeInScript = instr->args[1].i;
-            vm->currentInstruction =
-                (AnmRawInstr *)((u8 *)vm->beginningOfScript + instr->args[0].i);
-            goto WHY_NOT_JUST_CONTINUE;
-        case ANM_DEC_JUMP:
-            (*GET_INT_PTR(0))--;
-            if (GET_INT_VALUE(0) > 0)
-            {
-                vm->currentTimeInScript = instr->args[2].i;
-                vm->currentInstruction =
-                    (AnmRawInstr *)((u8 *)vm->beginningOfScript + instr->args[1].i);
-                goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_FLIP_X:
-            vm->flip ^= 1;
-            vm->scale.x *= -1.0f;
-            vm->updateScale = 1;
-            break;
-        case ANM_SET_USE_OFFSET:
-            vm->useOffset = instr->args[0].i;
-            break;
-        case ANM_FLIP_Y:
-            vm->flip ^= 2;
-            vm->scale.y *= -1.0f;
-            vm->updateScale = 1;
-            break;
-        case ANM_SET_ROTATION:
-            vm->rotation.x = GET_FLOAT_VALUE(0);
-            vm->rotation.y = GET_FLOAT_VALUE(1);
-            vm->rotation.z = GET_FLOAT_VALUE(2);
-            vm->updateRotation = 1;
-            break;
-        case ANM_SET_ANGLE_VEL:
-            vm->angleVel.x = GET_FLOAT_VALUE(0);
-            vm->angleVel.y = GET_FLOAT_VALUE(1);
-            vm->angleVel.z = GET_FLOAT_VALUE(2);
-            vm->updateRotation = 1;
-            break;
-        case ANM_SET_SCALE_SPEED:
-            vm->scaleGrowth.x = GET_FLOAT_VALUE(0);
-            vm->scaleGrowth.y = GET_FLOAT_VALUE(1);
-            break;
-        case ANM_INTERP_SCALE:
-            vm->interpStartTimes[4] = 0;
-            vm->interpEndTimes[4] = GET_INT_VALUE(2);
-            vm->easeModes[4] = 0;
-            vm->scaleInterpInitial = vm->scale;
-            vm->scaleInterpFinal.x = GET_FLOAT_VALUE(0);
-            vm->scaleInterpFinal.y = GET_FLOAT_VALUE(1);
-            break;
-        case ANM_FADE:
-            vm->colorInterpInitialColor.bytes.a = vm->color.bytes.a;
-            vm->colorInterpFinalColor.bytes.a = instr->args[0].b[0];
-            vm->interpStartTimes[2] = 0;
-            vm->interpEndTimes[2] = GET_INT_VALUE(1);
-            vm->easeModes[2] = 0;
-            break;
-        case ANM_SET_BLEND:
-            vm->blendMode = instr->args[0].i;
-            break;
-        case ANM_SET_TRANSLATION:
-            if (!vm->useOffset)
-            {
-                vm->pos = ZunVec3(GET_FLOAT_VALUE(0), GET_FLOAT_VALUE(1), GET_FLOAT_VALUE(2));
-            }
-            else
-            {
-                vm->offset = ZunVec3(GET_FLOAT_VALUE(0), GET_FLOAT_VALUE(1), GET_FLOAT_VALUE(2));
-            }
-            break;
-        case ANM_POS_TIME_ACCEL:
-            vm->easeModes[0] = 6;
-            StartPositionInterp(vm, instr, vm->easeModes[0]);
-            break;
-        case ANM_POS_TIME_DECEL:
-            vm->easeModes[0] = 4;
-            StartPositionInterp(vm, instr, vm->easeModes[0]);
-            break;
-        case ANM_POS_TIME_LINEAR:
-            vm->easeModes[0] = 0;
-            StartPositionInterp(vm, instr, 0);
-            break;case ANM_WAIT:
-            if (vm->waitTimer == 0)
-            {
-                vm->waitTimer = GET_INT_VALUE(0);
-            }
-            else
-            {
-                vm->waitTimer--;
-            }
-            if (vm->waitTimer <= 0)
-            {
-                vm->waitTimer = 0;
-                break;
-            }
-            vm->currentTimeInScript--;
-            goto stop;
-        case ANM_STOP_HIDE:
-            vm->visible = 0;
-        case ANM_STOP:
-            if (!vm->pendingInterrupt)
-            {
-                vm->isStopped = 1;
-                vm->currentTimeInScript--;
-                goto stop;
-            }
-        if (HandleInterrupt(vm))
-        {
-            goto WHY_NOT_JUST_CONTINUE;
-        }
-        goto stop;
-        case ANM_SET_VISIBILITY:
-            vm->visible = instr->args[0].i;
-            break;
-        case ANM_22:
-            vm->anchor = 3;
-            break;
-        case ANM_SET_AUTO_ROTATE:
-            vm->autoRotate = instr->args[0].us[0];
-            break;
-        case ANM_SET_SCROLL_POS_X:
-            vm->uvScrollPos.x += GET_FLOAT_VALUE(0);
-            if (vm->uvScrollPos.x >= 1.0f)
-            {
-                vm->uvScrollPos.x -= 1.0f;
-            }
-            else
-            {
-                if (vm->uvScrollPos.x < 0.0f)
-                {
-                    vm->uvScrollPos.x += 1.0f;
-                }
-            }
-            break;
-        case ANM_SET_SCROLL_POS_Y:
-            vm->uvScrollPos.y += GET_FLOAT_VALUE(0);
-            if (vm->uvScrollPos.y >= 1.0f)
-            {
-                vm->uvScrollPos.y -= 1.0f;
-            }
-            else
-            {
-                if (vm->uvScrollPos.y < 0.0f)
-                {
-                    vm->uvScrollPos.y += 1.0f;
-                }
-            }
-            break;
-        case ANM_SET_SCROLLVEL_X:
-            vm->uvScrollVel.x = GET_FLOAT_VALUE(0);
-            break;
-        case ANM_SET_SCROLLVEL_Y:
-            vm->uvScrollVel.y = GET_FLOAT_VALUE(0);
-            break;
-        case ANM_SET_ZWRITE_DISABLE:
-            vm->zWriteDisable = instr->args[0].i;
-            break;
-        case ANM_SET_CAMERA_MODE:
-            vm->cameraMode = instr->args[0].i;
-            break;
-        case ANM_INTERP_POS:
-            vm->interpStartTimes[0] = 0;
-            vm->interpEndTimes[0] = GET_INT_VALUE(0);
-            vm->easeModes[0] = instr->args[1].b[0];
-            if (!vm->useOffset)
-            {
-                vm->posInterpInitial = vm->pos;
-            }
-            else
-            {
-                vm->posInterpInitial = vm->offset;
-            }
-            vm->posInterpFinal.x = GET_FLOAT_VALUE(2);
-            vm->posInterpFinal.y = GET_FLOAT_VALUE(3);
-            vm->posInterpFinal.z = GET_FLOAT_VALUE(4);
-            break;
-        case ANM_INTERP_COLOR:
-            vm->interpStartTimes[1] = 0;
-            vm->interpEndTimes[1] = GET_INT_VALUE(0);
-            vm->easeModes[1] = instr->args[1].b[0];
-            vm->colorInterpInitialColor.bytes.r = vm->color.bytes.r;
-            vm->colorInterpInitialColor.bytes.g = vm->color.bytes.g;
-            vm->colorInterpInitialColor.bytes.b = vm->color.bytes.b;
-            vm->colorInterpFinalColor.bytes.r = instr->args[2].b[0];
-            vm->colorInterpFinalColor.bytes.g = instr->args[2].b[1];
-            vm->colorInterpFinalColor.bytes.b = instr->args[2].b[2];
-            break;
-        case ANM_INTERP_ALPHA:
-            vm->interpStartTimes[2] = 0;
-            vm->interpEndTimes[2] = GET_INT_VALUE(0);
-            vm->easeModes[2] = instr->args[1].b[0];
-            vm->colorInterpInitialColor.bytes.a = vm->color.bytes.a;
-            vm->colorInterpFinalColor.bytes.a = instr->args[2].b[0];
-            break;
-        case ANM_INTERP_ROTATE:
-            vm->interpStartTimes[3] = 0;
-            vm->interpEndTimes[3] = GET_INT_VALUE(0);
-            vm->easeModes[3] = instr->args[1].b[0];
-            vm->rotateInterpInitial = vm->rotation;
-            vm->rotateInterpFinal.x = GET_FLOAT_VALUE(2);
-            vm->rotateInterpFinal.y = GET_FLOAT_VALUE(3);
-            vm->rotateInterpFinal.z = GET_FLOAT_VALUE(4);
-            vm->updateRotation = 1;
-            break;
-        case ANM_INTERP_SCALE_2:
-            vm->interpStartTimes[4] = 0;
-            vm->interpEndTimes[4] = GET_INT_VALUE(0);
-            vm->easeModes[4] = instr->args[1].b[0];
-            vm->scaleInterpInitial = vm->scale;
-            vm->scaleInterpFinal.x = GET_FLOAT_VALUE(2);
-            vm->scaleInterpFinal.y = GET_FLOAT_VALUE(3);
-            vm->updateScale = 1;
-            break;
-        case ANM_MOV:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1);
-            break;
-        case ANM_MOV_FLOAT:
-            *GET_FLOAT_PTR(0) = GET_FLOAT_VALUE(1);
-            break;
-        case ANM_ADD_2:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1) + GET_INT_VALUE(2);
-            break;
-        case ANM_ADD_FLOAT_2:
-            *GET_FLOAT_PTR(0) = GET_FLOAT_VALUE(1) + GET_FLOAT_VALUE(2);
-            break;
-        case ANM_SUB_2:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1) - GET_INT_VALUE(2);
-            break;
-        case ANM_SUB_FLOAT_2:
-            *GET_FLOAT_PTR(0) = GET_FLOAT_VALUE(1) - GET_FLOAT_VALUE(2);
-            break;
-        case ANM_MUL_2:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1) * GET_INT_VALUE(2);
-            break;
-        case ANM_MUL_FLOAT_2:
-            *GET_FLOAT_PTR(0) = GET_FLOAT_VALUE(1) * GET_FLOAT_VALUE(2);
-            break;
-        case ANM_DIV_2:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1) / GET_INT_VALUE(2);
-            break;
-        case ANM_DIV_FLOAT_2:
-            *GET_FLOAT_PTR(0) = GET_FLOAT_VALUE(1) / GET_FLOAT_VALUE(2);
-            break;
-        case ANM_MOD_2:
-            *GET_INT_PTR(0) = GET_INT_VALUE(1) % GET_INT_VALUE(2);
-            break;
-        case ANM_MOD_FLOAT_2:
-            *GET_FLOAT_PTR(0) = fmodf(GET_FLOAT_VALUE(1), GET_FLOAT_VALUE(2));
-            break;
-        case ANM_ADD:
-            *GET_INT_PTR(0) += GET_INT_VALUE(1);
-            break;
-        case ANM_ADD_FLOAT:
-            *GET_FLOAT_PTR(0) += GET_FLOAT_VALUE(1);
-            break;
-        case ANM_SUB:
-            *GET_INT_PTR(0) -= GET_INT_VALUE(1);
-            break;
-        case ANM_SUB_FLOAT:
-            *GET_FLOAT_PTR(0) -= GET_FLOAT_VALUE(1);
-            break;
-        case ANM_MUL:
-            *GET_INT_PTR(0) *= GET_INT_VALUE(1);
-            break;
-        case ANM_MUL_FLOAT:
-            *GET_FLOAT_PTR(0) *= GET_FLOAT_VALUE(1);
-            break;
-        case ANM_DIV:
-            *GET_INT_PTR(0) /= GET_INT_VALUE(1);
-            break;
-        case ANM_DIV_FLOAT:
-            *GET_FLOAT_PTR(0) /= GET_FLOAT_VALUE(1);
-            break;
-        case ANM_MOD:
-            *GET_INT_PTR(0) %= GET_INT_VALUE(1);
-            break;
-        case ANM_MOD_FLOAT:
-            *GET_FLOAT_PTR(0) = fmodf(GET_FLOAT_VALUE(0), GET_FLOAT_VALUE(1));
-            break;
-        case ANM_RAND:
-            *GET_INT_PTR(0) = g_Rng.GetRandomU32InRange(GET_INT_VALUE(1));
-            break;
-        case ANM_RAND_FLOAT:
-            *GET_FLOAT_PTR(0) = g_Rng.GetRandomFloatInRange(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_SIN:
-            *GET_FLOAT_PTR(0) = sinf(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_COS:
-            *GET_FLOAT_PTR(0) = cosf(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_TAN:
-            *GET_FLOAT_PTR(0) = tanf(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_ACOS:
-            *GET_FLOAT_PTR(0) = acosf(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_ATAN:
-            *GET_FLOAT_PTR(0) = atanf(GET_FLOAT_VALUE(1));
-            break;
-        case ANM_NORMALIZE_ANGLE:
-            *GET_FLOAT_PTR(0) = utils::AddNormalizeAngle(GET_FLOAT_VALUE(0), 0.0f);
-            break;
-        case ANM_JUMP_IF_EQ:
-            if (GET_INT_VALUE(0) == GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_EQ_FLOAT:
-            if (GET_FLOAT_VALUE(0) == GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_NEQ:
-            if (GET_INT_VALUE(0) != GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_NEQ_FLOAT:
-            if (GET_FLOAT_VALUE(0) != GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_LT:
-            if (GET_INT_VALUE(0) < GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_LT_FLOAT:
-            if (GET_FLOAT_VALUE(0) < GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_LEQ:
-            if (GET_INT_VALUE(0) <= GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_LEQ_FLOAT:
-            if (GET_FLOAT_VALUE(0) <= GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_GT:
-            if (GET_INT_VALUE(0) > GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_GT_FLOAT:
-            if (GET_FLOAT_VALUE(0) > GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_GEQ:
-            if (GET_INT_VALUE(0) >= GET_INT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        case ANM_JUMP_IF_GEQ_FLOAT:
-            if (GET_FLOAT_VALUE(0) >= GET_FLOAT_VALUE(1))
-            {
-                JumpConditional(vm, instr);
-            goto WHY_NOT_JUST_CONTINUE;
-            }
-            break;
-        default:
-            break;
-        }
-        vm->currentInstruction = (AnmRawInstr *)((u8 *)instr + instr->size);
-        goto WHY_NOT_JUST_CONTINUE;
-    }
-
+    // The frame ends here. Everything that was above this point read the instruction stream;
+    // the stream is a coroutine now, and Run has already been as far through it as the clock
+    // allows. What remains is the update every VM needs whatever ran it.
 stop:
     if (vm->angleVel.x != 0.0f)
     {

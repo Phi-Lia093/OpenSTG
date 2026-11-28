@@ -42,7 +42,6 @@ set(SOURCES
     src/main.cpp
     src/render/GL.cpp
     src/script/AnmManager.cpp
-    src/script/AnmScripts.cpp
     src/script/AnmOp.cpp
     src/script/AnmScript.cpp
     src/script/AnmVmDebug.cpp

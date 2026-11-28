@@ -120,9 +120,6 @@ struct AnmEntry
     AnmRawEntry *raw;
     i32 spriteIndexOffset;
     i32 childCount;
-    // The instruction streams for this entry, in anm/<name>/scripts_<entry>.bin. Held here so
-    // ReleaseAnm can free it: the scripts[] pointers point into it and are read every frame.
-    u8 *scriptData;
     // What this entry occupies, so releasing it does not need the entry's description: the
     // description lives only for the duration of the load. The slot list is bounded by the
     // largest stream count in the shipped data, which is 66; the limit here is the same one

@@ -17,7 +17,6 @@
 #include "core/ZunMath.hpp"
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
-#include "script/AnmLua.hpp"
 
 AnmManager *g_AnmManager;
 
@@ -153,130 +152,6 @@ ZunResult AnmManager::LoadTexture(i32 textureIdx, const char *texturePath, u32 c
     return ZUN_SUCCESS;
 }
 
-ZunResult AnmManager::LoadTextureEmbedded(u32 textureIdx, ZunImageInfoEmbedded *imageInfo)
-{
-    SDL_Surface *surface;
-
-    ReleaseTexture(textureIdx);
-
-    u32 bpp = g_TextureBytesPerPixel[imageInfo->format];
-    u32 depth = bpp * 8;
-    u32 pitch = imageInfo->width * bpp;
-
-    SDL_PixelFormat sdlFormat = SDL_PIXELFORMAT_UNKNOWN;
-    switch (imageInfo->format)
-    {
-    case 1:
-        sdlFormat = SDL_PIXELFORMAT_ARGB8888;
-        break;
-    case 2:
-        sdlFormat = SDL_PIXELFORMAT_ARGB1555;
-        break;
-    case 3:
-        sdlFormat = SDL_PIXELFORMAT_RGB565;
-        break;
-    case 4:
-        sdlFormat = SDL_PIXELFORMAT_BGR24;
-        break;
-    case 5:
-        sdlFormat = SDL_PIXELFORMAT_ARGB4444;
-        break;
-    default:
-        return ZUN_ERROR;
-    }
-
-    surface = SDL_CreateSurfaceFrom(imageInfo->width, imageInfo->height, sdlFormat, imageInfo->data,
-                                    pitch);
-    if (!surface)
-    {
-        return ZUN_ERROR;
-    }
-
-    SDL_Surface *converted = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(surface);
-
-    if (!converted)
-    {
-        return ZUN_ERROR;
-    }
-
-    this->textures[textureIdx] = g_Supervisor.gfxDevice->CreateTexture();
-    g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
-    g_Supervisor.gfxDevice->SetTextureImage(converted->w, converted->h, PIXEL_RGBA,
-                                            PIXEL_UNSIGNED_BYTE, converted->pixels);
-
-    this->imageDataArray[textureIdx] = malloc(converted->pitch * converted->h);
-    memcpy(this->imageDataArray[textureIdx], converted->pixels, converted->pitch * converted->h);
-
-    textureWidths[textureIdx] = converted->w;
-    textureHeights[textureIdx] = converted->h;
-    texturePitches[textureIdx] = converted->pitch;
-
-    SDL_DestroySurface(converted);
-    return ZUN_SUCCESS;
-}
-
-ZunResult AnmManager::LoadTextureAlphaChannel(i32 textureIdx, const char *texturePath)
-{
-    u8 *data;
-
-    u8 *basePixels = (u8 *)this->imageDataArray[textureIdx];
-    if (!basePixels)
-    {
-        return ZUN_ERROR;
-    }
-
-    data = FileSystem::OpenFile(texturePath, 0);
-    if (!data)
-    {
-        return ZUN_ERROR;
-    }
-    SDL_IOStream *rw = SDL_IOFromMem(data, g_LastFileSize);
-    SDL_Surface *alphaSurface = IMG_Load_IO(rw, 1);
-    free(data);
-
-    if (!alphaSurface)
-    {
-        return ZUN_ERROR;
-    }
-
-    if (alphaSurface->w != (i32)this->textureWidths[textureIdx] ||
-        alphaSurface->h != (i32)this->textureHeights[textureIdx])
-    {
-        SDL_DestroySurface(alphaSurface);
-        return ZUN_ERROR;
-    }
-
-    SDL_Surface *converted = SDL_ConvertSurface(alphaSurface, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(alphaSurface);
-
-    if (!converted)
-    {
-        return ZUN_ERROR;
-    }
-
-    u8 *alphaPixels = (u8 *)converted->pixels;
-
-    for (u32 y = 0; y < this->textureHeights[textureIdx]; y++)
-    {
-        for (u32 x = 0; x < this->textureWidths[textureIdx]; x++)
-        {
-            u32 baseOffset = (y * this->texturePitches[textureIdx]) + (x * 4);
-            u32 alphaOffset = (y * converted->pitch) + (x * 4);
-
-            basePixels[baseOffset + 3] = alphaPixels[alphaOffset + 2];
-        }
-    }
-
-    g_Supervisor.gfxDevice->BindTexture(this->textures[textureIdx]);
-    g_Supervisor.gfxDevice->SetTextureImage(this->textureWidths[textureIdx],
-                                            this->textureHeights[textureIdx], PIXEL_RGBA,
-                                            PIXEL_UNSIGNED_BYTE, basePixels);
-
-    SDL_DestroySurface(converted);
-    return ZUN_SUCCESS;
-}
-
 ZunResult AnmManager::CreateEmptyTexture(i32 textureIdx, u32 width, u32 height)
 {
     ReleaseTexture(textureIdx);
@@ -301,62 +176,6 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     i32 res;
     u32 ownsMemory;
     AnmRawEntry *entry;
-
-    // An animation converted to the new form lives in anm/<name>/ as a directory of PNG, TOML
-    // and Lua. That takes precedence over the binary file, which is how a file moves across
-    // one at a time; anything not yet converted falls through to the original format below.
-    std::string anmName = path;
-    const size_t slash = anmName.find_last_of('/');
-    if (slash != std::string::npos)
-    {
-        anmName = anmName.substr(slash + 1);
-    }
-    if (anmName.size() > 4 && anmName.compare(anmName.size() - 4, 4, ".anm") == 0)
-    {
-        anmName.resize(anmName.size() - 4);
-    }
-
-    if (AnmLua::Exists(anmName.c_str()))
-    {
-        std::string error;
-
-        // With TH07_ANM_DEBUG set, check the stream built from Lua against the original
-        // before the game uses it. The Lua is a transcription, so they must be identical;
-        // a mismatch names the first differing field rather than needing someone to judge
-        // how the animation plays.
-        if (SDL_getenv("TH07_ANM_DEBUG") &&
-            !AnmLua::VerifyAgainstBinary(anmName.c_str(), error))
-        {
-            g_GameErrorContext.Fatal("%s: %s\n", anmName.c_str(), error.c_str());
-        }
-
-        u32 builtSize = 0;
-        entry = (AnmRawEntry *)AnmLua::BuildEntries(anmName.c_str(), &builtSize, error);
-        if (!entry)
-        {
-            g_GameErrorContext.Fatal("%s: %s\n", anmName.c_str(), error.c_str());
-            return ZUN_ERROR;
-        }
-
-        i32 startIdx = anmIdx;
-        while (true)
-        {
-            res = LoadAnm(anmIdx, entry, spriteIdxOffset, 1);
-            if (res < 0)
-            {
-                this->anmFiles[startIdx].childCount = anmIdx - startIdx;
-                return res;
-            }
-            anmIdx++;
-            if (entry->nextOffset == 0)
-            {
-                this->anmFiles[startIdx].childCount = anmIdx - startIdx;
-                return ZUN_SUCCESS;
-            }
-            entry = (AnmRawEntry *)((u8 *)entry + entry->nextOffset);
-            spriteIdxOffset = spriteIdxOffset + res;
-        }
-    }
 
     entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
     ownsMemory = 1;
@@ -416,44 +235,33 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
     }
     data->textureIdx = textureIdx;
     data->ownsMemory = ownsMemory;
-    if (!data->hasData)
+    // Every texture is a file beside the animation now; the embedded form is gone. The check
+    // is kept as a hard failure rather than silently taking the other branch, because an
+    // entry that still carries pixels would otherwise load through code no longer exercised
+    // and hide which animation had not been converted.
+    if (data->hasData)
     {
-        name = (char *)((u8 *)data + data->nameOffset);
-        if (*name == '@')
-        {
-            CreateEmptyTexture(data->textureIdx, data->width, data->height);
-        }
-        else
-        {
-            if (LoadTexture(data->textureIdx, name, data->format) != ZUN_SUCCESS)
-            {
-                g_GameErrorContext.Fatal(
-                    "テクスチャ %s が読み込めません。データが失われてるか壊れています\n", name);
-                return ZUN_ERROR;
-            }
-        }
-        if (data->mipmapNameOffset != 0)
-        {
-            name = (char *)((u8 *)data + data->mipmapNameOffset);
-            if (LoadTextureAlphaChannel(data->textureIdx, name) != ZUN_SUCCESS)
-            {
-                g_GameErrorContext.Fatal(
-                    "テクスチャ %s が読み込めません。データが失われてるか壊れています\n", name);
-                return ZUN_ERROR;
-            }
-        }
+        g_GameErrorContext.Fatal(
+            "テクスチャが埋め込まれたままです。アニメを変換してください\n");
+        return ZUN_ERROR;
+    }
+
+    name = (char *)((u8 *)data + data->nameOffset);
+    if (*name == '@')
+    {
+        CreateEmptyTexture(data->textureIdx, data->width, data->height);
     }
     else
     {
-        if (LoadTextureEmbedded(data->textureIdx,
-                                (ZunImageInfoEmbedded *)((u8 *)data + data->textureOffset)) !=
-            ZUN_SUCCESS)
+        if (LoadTexture(data->textureIdx, name, data->format) != ZUN_SUCCESS)
         {
             g_GameErrorContext.Fatal(
-                "テクスチャが読み込めません。データが失われてるか壊れています\n");
+                "テクスチャ %s が読み込めません。データが失われてるか壊れています\n", name);
             return ZUN_ERROR;
         }
     }
+    // A separate alpha channel was only ever used with an embedded image; no entry in the
+    // shipped data had one, and with external textures the PNG carries its own alpha.
     this->textureNames[textureIdx] = (char *)((u8 *)data + data->nameOffset);
 
     u32 texWidth = this->textureWidths[textureIdx] ? this->textureWidths[textureIdx] : data->width;

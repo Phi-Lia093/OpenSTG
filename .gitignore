@@ -1,9 +1,9 @@
 # Build output.
 build/
 
-# assets/ is committed, but only the content the project has modernised. Original game
-# data that happens to be staged there must not enter the repository: the archive is
-# extracted at build time instead. See assets/README.md.
+# assets/ is committed: what is there is the project's own content, converted from the game's
+# original data and edited as source. The archive those came from is never committed, and the
+# rules below keep any copy of it out if one is ever staged here by hand. See assets/README.md.
 assets/**/*.anm
 assets/**/*.ecl
 assets/**/*.dat
@@ -15,6 +15,7 @@ assets/**/*.sht
 assets/**/*.std
 assets/**/*.end
 assets/**/*.fmt
+assets/**/*.bin
 
 # Local toolchains and SDKs. None of these are source: SDL packages, the retail data
 # files and the font are downloaded or copied in separately.

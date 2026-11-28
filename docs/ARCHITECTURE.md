@@ -52,7 +52,7 @@ Each resource type has one manager, and they are global singletons:
 
 | Manager | Owns |
 | --- | --- |
-| `AnmManager` | Sprites, animations and the ANM scripts that drive them |
+| `AnmManager`, `AnmScript` | Sprites and animations; the scripts that drive them, as Lua coroutines |
 | `EclManager` | The enemy scripting VM and its instruction set |
 | `Stage` | Stage background geometry and camera |
 | `Player`, `EnemyManager`, `BulletManager`, `ItemManager`, `EffectManager` | Gameplay entities |
@@ -150,12 +150,17 @@ planned work.
 
 ### ANM
 
-Sprites and animation are described by ANM files. An ANM has an embedded texture and a
-list of scripts, each a run of instructions that set sprite, position, scale, rotation,
-colours and the like. `AnmManager` interprets these at runtime.
+Sprites and animation are described in Lua, one file per animation under `assets/anm/`. A file
+holds the textures' layout, the sprites cut from each, and the scripts that set sprite, position,
+scale, rotation, colours and the like. Each script is a Lua function whose instructions are
+method calls, and `AnmScript` runs it as a coroutine that the game resumes once a frame.
 
-Sprites reference a texture by index and a rectangle within it, so a texture and the
-sprites that use it are loaded together.
+The game reads only the Lua. `tools/build_anm_data.py` converts the original binary animations
+into it when the data is first extracted; the result is committed and is the source from then on. The
+instruction bodies live in `AnmOp::Run`, which the runtime calls, so the names in a script and the
+code that carries them out are one set rather than two that must be kept in step.
+
+See [ANM.md](ANM.md) for the file format and how a script runs.
 
 ### ECL
 

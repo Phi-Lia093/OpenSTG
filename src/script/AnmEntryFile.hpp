@@ -19,7 +19,6 @@ namespace AnmEntryFile
 struct Script
 {
     i32 index = 0;   // the number the game uses to run this stream
-    i32 offset = 0;  // where it starts in the entry's script file
 };
 
 struct Sprite

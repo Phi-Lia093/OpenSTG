@@ -17,9 +17,8 @@ not about making the game run.
 The build targets Windows and uses desktop OpenGL 3.3. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the code is laid out today and
 [ROADMAP.md](ROADMAP.md) for the order the work is planned in.
-[ANM_LUA_PLAN.md](ANM_LUA_PLAN.md) covers the largest piece of planned work: replacing the
-binary animation format with a PNG atlas, a TOML description and a Lua script that
-transcribes the original virtual machine's instructions.
+[ANM.md](ANM.md) covers the first piece of work that is finished: the animations are Lua now,
+and the binary format they came from is gone.
 
 ## Building
 
@@ -51,6 +50,7 @@ The original game data is not distributed here. `build/run/` gets:
 | Path | Contents |
 | --- | --- |
 | `th07.data/` | The game's data files, one per file, extracted from `th07.dat` |
+| `assets/` | Content the project has converted, read in preference to `th07.data/` |
 | `thbgm.dat` | The music stream, copied unchanged |
 
 `tools/extract_assets.py` produces `th07.data/` with thdat from thtk; `build_portable.py`

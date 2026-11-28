@@ -114,7 +114,10 @@ ZunResult AnmManager::LoadTexture(i32 textureIdx, const char *texturePath, u32 c
 
     ReleaseTexture(textureIdx);
 
-    srcData = FileSystem::OpenFile(texturePath, 1);
+    // Through the asset store, like every other file: the textures are converted assets under
+    // assets/, and the store is what knows where a name lives. Asking the filesystem directly
+    // looked for them relative to the working directory, where they are not.
+    srcData = FileSystem::OpenFile(texturePath, 0);
     if (!srcData)
     {
         return ZUN_ERROR;
@@ -255,8 +258,11 @@ i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
     else
     {
         char texturePath[192];
-        snprintf(texturePath, sizeof(texturePath), "th07.data/anm/%s/%s",
-                 this->currentAnmName, description.texture.c_str());
+        // Relative to the asset root, not to th07.data/: the textures are converted assets and
+        // live under assets/, and the store decides which root a name comes from. Writing the
+        // data directory here would name a directory the store does not know about.
+        snprintf(texturePath, sizeof(texturePath), "anm/%s/%s", this->currentAnmName,
+                 description.texture.c_str());
         if (LoadTexture(textureIdx, texturePath, description.format) != ZUN_SUCCESS)
         {
             g_GameErrorContext.Fatal(

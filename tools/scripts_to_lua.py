@@ -51,6 +51,7 @@ HEADER = ROOT / 'src/script/AnmVm.hpp'
 INTERPRETER = ROOT / 'src/script/AnmManager.cpp'
 
 JUMP = 4
+DEC_JUMP = 5
 INTERRUPT_LABEL = 21
 DEC_JUMP = 5
 CONDITIONAL = set(range(67, 79))
@@ -218,11 +219,15 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
 
     current_time = None
 
-    # Every offset a jump targets gets a label, so the jump has somewhere to go.
+    # Every offset a jump targets gets a label, so the jump has somewhere to go. DEC_JUMP goes
+    # somewhere too -- it is the tail of a loop -- so its target is collected the same way.
     jump_targets = set()
     for instruction in instructions:
-        if instruction[1] == JUMP and instruction[5]:
-            jump_targets.add(struct.unpack('<i', struct.pack('<I', instruction[5][0]))[0])
+        opcode, args = instruction[1], instruction[5]
+        if opcode == JUMP and args:
+            jump_targets.add(struct.unpack('<i', struct.pack('<I', args[0]))[0])
+        elif opcode == DEC_JUMP and len(args) >= 2:
+            jump_targets.add(struct.unpack('<i', struct.pack('<I', args[1]))[0])
 
     for relative, opcode, size, time, flags, args in instructions:
         del size
@@ -290,6 +295,22 @@ def stream_body(data: bytes, start: int, names: dict[int, str],
                 # single instruction the binary holds rather than as two unrelated statements.
                 lines.append(f'        s:SET_CLOCK({clock}, {offset})')
                 lines.append(f'        goto {target}')
+                continue
+
+        # DEC_JUMP is the tail of a loop: decrement a counter and go back while it stays positive.
+        # It was left as a plain call, which decremented and then carried on -- so a loop ran one
+        # time more than it should. The counter lives in a register, so the counting is asked of
+        # the runtime, which is the only thing that can reach it; the going is a Lua jump.
+        if opcode == DEC_JUMP and len(args) >= 2:
+            offset = struct.unpack('<i', struct.pack('<I', args[1]))[0]
+            target = jump_label(offset)
+            if target:
+                clock = struct.unpack('<i', struct.pack('<I', args[2]))[0] if len(args) > 2 else 0
+                counter = (f'{{r = {args[0]}}}'
+                           if flags & 1 else str(struct.unpack('<i', struct.pack('<I', args[0]))[0]))
+                lines.append(f'        if s:LOOP_BACK({counter}, {clock}, {offset}) then')
+                lines.append(f'            goto {target}')
+                lines.append('        end')
                 continue
 
         lines.append(call)

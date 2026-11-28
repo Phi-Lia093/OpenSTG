@@ -5,7 +5,9 @@ checked. Each stage is meant to leave the game playable.
 
 The sequence is chosen so that each stage depends only on things already done, and so the
 riskiest work — the ECL VM — happens once the surrounding systems are modern and easier to
-test against.
+test against. The ANM stage is deliberately the first of the two VMs: it is the same kind of
+problem at a fraction of the size, so what it taught about running a script as Lua was learned
+somewhere the loops were short.
 
 ## Order at a glance
 
@@ -16,7 +18,8 @@ test against.
 | 3 | Resolution independence | Medium | Planned |
 | 4 | Audio: new subsystem for SE and BGM | Medium | Planned |
 | 5 | Configuration: binary cfg → TOML | Low | **Done** |
-| 6 | ECL: byte-code → Lua | High | Planned |
+| 6 | ANM: binary animations → Lua | High | **Done** |
+| 7 | ECL: byte-code → Lua | High | Planned |
 
 Stages 1, 2 and 3 are ordered first because the later work is easier when assets are
 plain files, strings are externalized, and the coordinate system is not fixed at 640×480.
@@ -164,7 +167,42 @@ depend on the text work.
 
 ---
 
-## Stage 6 — ECL to Lua
+## Stage 6 — ANM to Lua — Done
+
+**Goal.** Replace the binary animation format with something readable, without changing what
+the game draws.
+
+**Result.** Animations are Lua, one directory per animation under `assets/anm/`: a description,
+a PNG per entry, and a Lua function per script. The game reads only that -- it does not open an
+`.anm` file. `tools/build_anm_data.py` converts the originals into it, once, when the data is
+extracted; the result is committed and is the source from then on.
+
+The work was done in steps that each left the game playable: textures out first, then the sprite
+tables, then the instruction streams as a separate file, then the streams as Lua text, then the
+Lua text actually running the game. The last step is the one that took the effort, and the
+faults it exposed were all in how the Lua was driven rather than in what it said:
+
+- `STOP_HIDE` was read as the end of a stream. It hides the sprite and parks the script, and the
+  stream continues after it, so every script was truncated at its first one. The description had
+  looked complete because the checks reading it made the same mistake.
+- A jump moved the instruction pointer, which a coroutine does not have. Looping animations ran
+  off the end of their loop into the exit that follows it.
+- `at(t)` yielded once and let the stream continue. A C function that yields with plain
+  `lua_yield` does not run again when resumed, so no wait lasted more than a frame.
+- An interrupt rebuilt the coroutine without checking the stream had that label, so a stream
+  told to resume at 2 when it only had -1 ran from its top instead.
+
+**What it needed.** A way to see what a VM is doing: `TH07_ANM_DEBUG=1` dumps every VM's state
+each frame. None of the faults above are visible from outside, and reading the code produced
+guesses rather than answers.
+
+**Why first.** ECL is the same kind of problem -- a byte-code VM driving a lot of state -- and
+larger. What this stage established is that the approach works and, more usefully, where it goes
+wrong: the translation was never the hard part, driving it was.
+
+---
+
+## Stage 7 — ECL to Lua
 
 **Goal.** Replace the ECL byte-code VM with Lua scripts.
 

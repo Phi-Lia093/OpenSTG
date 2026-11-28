@@ -124,6 +124,20 @@ def main() -> int:
             print("asset extraction failed; the game will not start without th07.data/")
             return 1
 
+    # The converted assets, copied whole beside the data. They are read from here in preference
+    # to th07.data/, so they are source rather than something built from the archive: the
+    # animations in Lua, the textures taken out of them, and whatever else has been converted.
+    # The archive still holds an anm/ of its own, and the store looking here first is what makes
+    # it ignored.
+    asset_source = ROOT / "assets"
+    asset_target = run_dir / "assets"
+    if asset_source.is_dir():
+        if asset_target.exists():
+            shutil.rmtree(asset_target)
+        shutil.copytree(asset_source, asset_target)
+        copied = sum(1 for item in asset_target.rglob("*") if item.is_file())
+        print(f"assets/: {copied} files")
+
     print(f"\n{run_dir / 'th07.exe'}  ({(run_dir / 'th07.exe').stat().st_size} bytes)")
     return 0
 

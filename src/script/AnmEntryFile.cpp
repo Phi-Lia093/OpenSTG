@@ -232,11 +232,9 @@ bool Load(const char *anmName, i32 entryIndex, Entry &out, std::string &error)
             if (lua_istable(state, -1))
             {
                 Script script;
-                double id = 0, offset = 0;
+                double id = 0;
                 ReadNumber(state, lua_gettop(state), "index", id);
-                ReadNumber(state, lua_gettop(state), "offset", offset);
                 script.index = (i32)id;
-                script.offset = (i32)offset;
                 out.scripts.push_back(script);
             }
             lua_pop(state, 1);

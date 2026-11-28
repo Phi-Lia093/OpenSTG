@@ -230,6 +230,59 @@ int Lua_setClock(lua_State *L)
     return 0;
 }
 
+// loop_back(counter, time, offset): DEC_JUMP, split between the counting and the going.
+//
+// The counter is a register, so only the runtime can reach it. It decrements it and answers
+// whether the loop continues; the generated stream jumps when the answer is yes. Both halves of
+// the instruction are on one line in the source so they cannot come apart.
+int Lua_loopBack(lua_State *L)
+{
+    AnmVm *vm = VmOf(L);
+    if (!vm || lua_gettop(L) < 4)
+    {
+        return 0;
+    }
+
+    // The counter is either a register reference or a plain number, and the decrement has to land
+    // wherever it lives.
+    i32 counter;
+    bool isRegister = false;
+    if (lua_istable(L, 2))
+    {
+        lua_getfield(L, 2, "r");
+        counter = (i32)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        isRegister = true;
+    }
+    else
+    {
+        counter = (i32)lua_tointeger(L, 2);
+    }
+
+    if (isRegister)
+    {
+        i32 *slot = vm->GetVar(&counter, 1, 0);
+        (*slot)--;
+        counter = *slot;
+    }
+    else
+    {
+        counter = counter - 1;
+    }
+
+    // Only a positive count goes back. The clock is set for the jump, which the caller does.
+    if (counter > 0)
+    {
+        vm->currentTimeInScript = (i32)lua_tointeger(L, 3);
+        lua_pushboolean(L, 1);
+    }
+    else
+    {
+        lua_pushboolean(L, 0);
+    }
+    return 1;
+}
+
 // entry(): where this run of the stream begins.
 //
 // Every generated stream reads this and jumps to the matching label, so a stream built in answer
@@ -382,6 +435,8 @@ void RegisterMethods(lua_State *L, int table)
     lua_setfield(L, table, "LABEL");
     lua_pushcfunction(L, Lua_setClock);
     lua_setfield(L, table, "SET_CLOCK");
+    lua_pushcfunction(L, Lua_loopBack);
+    lua_setfield(L, table, "LOOP_BACK");
 }
 
 // Whether a stream can be entered at `entry`. A stream lists its labels in its entry table, and

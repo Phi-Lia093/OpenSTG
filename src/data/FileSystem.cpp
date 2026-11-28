@@ -17,22 +17,31 @@ u8 *FileSystem::OpenFile(const char *filepath, i32 isExternalResource)
 
     if (!isExternalResource)
     {
-        // The asset container holds its files by bare name, so a path like "data/x.anm"
-        // is looked up as "x.anm". That matches how the original archive was laid out.
-        filename = filepath;
-        for (const char *p = filepath; *p; p++)
-        {
-            if (*p == '/' || *p == '\\')
-            {
-                filename = p + 1;
-            }
-        }
-
+        // The store keeps files by their path inside it, and the converted assets are under a
+        // directory of their own -- anm/<name>/texture_0.png, for instance. A caller that names a
+        // bare file, as the original archive's lookups did, is still found, so both spellings
+        // work: the path as given, then the bare name.
         u32 size = 0;
-        buf = AssetStore::Read(filename, &size);
+        buf = AssetStore::Read(filepath, &size);
         if (!buf)
         {
-            g_GameErrorContext.Fatal("error : %s is not found in arcfile.\n", filename);
+            filename = filepath;
+            for (const char *p = filepath; *p; p++)
+            {
+                if (*p == '/' || *p == '\\')
+                {
+                    filename = p + 1;
+                }
+            }
+            buf = AssetStore::Read(filename, &size);
+        }
+        else
+        {
+            filename = filepath;
+        }
+        if (!buf)
+        {
+            g_GameErrorContext.Fatal("error : %s is not found in arcfile.\n", filepath);
             return NULL;
         }
         Supervisor::DebugPrint("%s Decode ... \n", filename);

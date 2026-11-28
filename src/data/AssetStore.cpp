@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <system_error>
 
+#include "core/GameErrorContext.hpp"
+
 namespace AssetStore
 {
 namespace
@@ -25,6 +27,12 @@ enum class Container
 
 Container g_Container = Container::None;
 std::string g_Root;        // directory holding the files, with a trailing separator
+
+// Where converted assets live, tried before g_Root. The animation descriptions, their textures and
+// everything else taken out of the game's archive are source files now rather than something built
+// from it, so they are read from assets/ and edited there. The rest of the data is still read from
+// th07.data/ exactly as it ships. One lookup finds either, so nothing else has to know which.
+std::string g_AssetRoot;
 std::string g_ArchivePath; // the ZIP, when that is the container
 std::vector<std::string> g_Names;
 
@@ -70,14 +78,23 @@ bool Open()
     const std::string base = BasePath();
     const std::string dataDir = base + "th07.data/";
     const std::string zipPath = base + "th07.zip";
+    const std::string assetDir = base + "assets/";
 
     std::error_code ec;
     if (std::filesystem::is_directory(dataDir, ec))
     {
         g_Container = Container::Directory;
         g_Root = dataDir;
+        {
+            std::error_code assetEc;
+            if (std::filesystem::is_directory(assetDir, assetEc))
+            {
+                g_AssetRoot = assetDir;
+            }
+        }
         CollectNames(dataDir);
-        SDL_Log("assets: %zu files from %s", g_Names.size(), g_Root.c_str());
+        SDL_Log("assets: %zu files from %s (converted assets from %s)", g_Names.size(),
+                g_Root.c_str(), g_AssetRoot.empty() ? "(none)" : g_AssetRoot.c_str());
         return !g_Names.empty();
     }
 
@@ -96,6 +113,7 @@ void Close()
 {
     g_Container = Container::None;
     g_Root.clear();
+    g_AssetRoot.clear();
     g_ArchivePath.clear();
     g_Names.clear();
 }
@@ -115,8 +133,18 @@ u8 *Read(const char *name, u32 *size)
     {
     case Container::Directory:
     {
-        const std::string path = g_Root + name;
-        SDL_IOStream *file = SDL_IOFromFile(path.c_str(), "rb");
+        // assets/ first, then the game's own data. A converted asset lives in the first and
+        // shadows anything of the same name in the second, which is what makes the converted form
+        // the one that is read.
+        SDL_IOStream *file = NULL;
+        if (!g_AssetRoot.empty())
+        {
+            file = SDL_IOFromFile((g_AssetRoot + name).c_str(), "rb");
+        }
+        if (!file)
+        {
+            file = SDL_IOFromFile((g_Root + name).c_str(), "rb");
+        }
         if (!file)
         {
             return NULL;

@@ -180,6 +180,13 @@ struct AnmManager
     // POS_TIME_* opcodes differ only in that number.
     void StartPositionInterp(AnmVm *vm, const AnmRawInstr *instr, i32 easeMode);
 
+    // Scans for the label a pending interrupt names, moving the VM there.
+    //
+    // This was the `handle_interrupt:` label, which both STOP and the check before the loop
+    // jumped to. It returns what the caller should do next as an int: 1 when it found its
+    // label and the loop should continue from there, 0 when there is nowhere to go.
+    i32 HandleInterrupt(AnmVm *vm);
+
     void Flush();
     // `entryIndex` is which entry of the file this is, needed to find its sprite table: that
     // table is a TOML file beside the animation rather than a region inside it.

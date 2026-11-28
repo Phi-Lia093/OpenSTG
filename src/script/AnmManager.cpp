@@ -18,6 +18,7 @@
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
 #include "script/AnmEntryFile.hpp"
+#include "script/AnmOp.hpp"
 #include "script/AnmScripts.hpp"
 
 AnmManager *g_AnmManager;
@@ -1380,6 +1381,49 @@ void AnmManager::StartPositionInterp(AnmVm *vm, const AnmRawInstr *instr, i32 ea
 }
 
 
+i32 AnmManager::HandleInterrupt(AnmVm *vm)
+{
+    AnmRawInstr *instr;
+    AnmRawInstr *nextInstr;
+
+    // The interrupt scan: from the beginning of the script, find the label number the pending
+    // interrupt names. A label numbered -1 is remembered as a fallback for a script that has
+    // no matching label, and ANM_EXIT_HIDE ends the search.
+    nextInstr = NULL;
+    instr = vm->beginningOfScript;
+    while ((instr->opcode != ANM_INTERRUPT_LABEL ||
+            (i32)vm->pendingInterrupt != instr->args[0].i) &&
+           instr->opcode != ANM_EXIT_HIDE)
+    {
+        if (instr->opcode == ANM_INTERRUPT_LABEL && instr->args[0].i == -1)
+        {
+            nextInstr = instr;
+        }
+        instr = (AnmRawInstr *)((u8 *)instr + instr->size);
+    }
+
+    vm->pendingInterrupt = 0;
+    vm->isStopped = 0;
+
+    if (instr->opcode != ANM_INTERRUPT_LABEL)
+    {
+        if (!nextInstr)
+        {
+            // Nothing to jump to: the frame ends here, as `goto stop` did.
+            vm->currentTimeInScript--;
+            return 0;
+        }
+        instr = nextInstr;
+    }
+
+    instr = (AnmRawInstr *)((u8 *)instr + instr->size);
+    vm->currentInstruction = instr;
+    vm->currentTimeInScript = vm->currentInstruction->time;
+    vm->visible = 1;
+    return 1;
+}
+
+
 i32 AnmManager::ExecuteScript(AnmVm *vm)
 {
     AnmRawInstr *instr;
@@ -1411,19 +1455,40 @@ i32 AnmManager::ExecuteScript(AnmVm *vm)
 
     if (vm->pendingInterrupt != 0)
     {
-        goto handle_interrupt;
+        // A pending interrupt is handled before anything else, by the same scan STOP reaches.
+        if (HandleInterrupt(vm))
+        {
+            goto WHY_NOT_JUST_CONTINUE;
+        }
+        goto stop;
     }
 
 WHY_NOT_JUST_CONTINUE:
     instr = vm->currentInstruction;
     while (instr->time <= vm->currentTimeInScript.GetCurrent())
     {
+        // Instructions that have been lifted run here; anything else falls through to the
+        // switch below, so the set can grow one instruction at a time.
+        switch (AnmOp::Run(vm, instr))
+        {
+        case OpResult::Stop:
+            return 1;
+        case OpResult::Restart:
+            goto WHY_NOT_JUST_CONTINUE;
+        case OpResult::EndFrame:
+            goto stop;
+        case OpResult::Next:
+            vm->currentInstruction = (AnmRawInstr *)((u8 *)instr + instr->size);
+            goto WHY_NOT_JUST_CONTINUE;
+        case OpResult::NotHandled:
+            break;
+        }
+
         switch (instr->opcode)
         {
         case ANM_EXIT_HIDE:
         case ANM_EXIT_HIDE2:
-            vm->visible = 0;
-        case ANM_EXIT:
+            vm->visible = 0;     case ANM_EXIT:
             vm->currentInstruction = NULL;
             return 1;
         case ANM_SET_ACTIVE_SPRITE:
@@ -1550,36 +1615,11 @@ WHY_NOT_JUST_CONTINUE:
                 vm->currentTimeInScript--;
                 goto stop;
             }
-        handle_interrupt:
-            nextInstr = NULL;
-            instr = vm->beginningOfScript;
-            while ((instr->opcode != ANM_INTERRUPT_LABEL ||
-                    (i32)vm->pendingInterrupt != instr->args[0].i) &&
-                   instr->opcode != ANM_EXIT_HIDE)
-            {
-                if (instr->opcode == ANM_INTERRUPT_LABEL && instr->args[0].i == -1)
-                {
-                    nextInstr = instr;
-                }
-                instr = (AnmRawInstr *)((u8 *)instr + instr->size);
-            }
-            vm->pendingInterrupt = 0;
-            vm->isStopped = 0;
-            if (instr->opcode != ANM_INTERRUPT_LABEL)
-            {
-                if (!nextInstr)
-                {
-                    vm->currentTimeInScript--;
-                    goto stop;
-                }
-                instr = nextInstr;
-            }
-
-            instr = (AnmRawInstr *)((u8 *)instr + instr->size);
-            vm->currentInstruction = instr;
-            vm->currentTimeInScript = vm->currentInstruction->time;
-            vm->visible = 1;
+        if (HandleInterrupt(vm))
+        {
             goto WHY_NOT_JUST_CONTINUE;
+        }
+        goto stop;
         case ANM_SET_VISIBILITY:
             vm->visible = instr->args[0].i;
             break;

@@ -66,6 +66,17 @@ def convert(name: str) -> int:
         base = min(offsets)
         region = original[start + base:end]
 
+        # A terminator after the last stream.
+        #
+        # ExecuteScript exits with a scan over the instruction stream looking for an
+        # ANM_INTERRUPT_LABEL whose number matches, and it advances by each instruction's size
+        # field. Inside the ANM file the bytes after the last stream happened to be something
+        # it would stop at; a file that ends exactly at the last stream has nothing, and the
+        # scan walks off the end of the buffer and never finishes. Providing the stop
+        # explicitly is what the original relied on luck for.
+        terminator = struct.pack('<hHhH', -1, 8, 0, 0)  # ANM_EXIT_HIDE
+        region += terminator * 4
+
         target_dir = ANM_DIR / name
         target_dir.mkdir(parents=True, exist_ok=True)
         target_file = target_dir / f'scripts_{index}.bin'

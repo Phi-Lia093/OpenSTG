@@ -77,12 +77,21 @@ def main() -> int:
                 continue
 
             have = external.read_bytes()
-            if have != expected:
+
+            # The file ends with terminators the converter adds, so the comparison is against
+            # the bytes the region came from, and the tail is checked separately.
+            if len(have) < len(expected) or have[:len(expected)] != expected:
                 where = next((i for i, (a, b) in enumerate(zip(expected, have)) if a != b),
                              None)
                 problems.append(f'{name} entry {index}: {len(expected)} bytes expected, '
                                 f'{len(have)} present'
                                 + (f', first difference at {where}' if where is not None else ''))
+                continue
+
+            tail = have[len(expected):]
+            terminator = struct.pack('<hHhH', -1, 8, 0, 0)
+            if tail != terminator * (len(tail) // len(terminator)):
+                problems.append(f'{name} entry {index}: the terminator tail is malformed')
                 continue
 
             checked += 1

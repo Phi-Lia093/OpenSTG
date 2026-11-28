@@ -1,5 +1,6 @@
 #pragma once
 
+#include "script/AnmEntryFile.hpp"
 #include "script/AnmVm.hpp"
 
 #include <SDL3/SDL.h>
@@ -122,6 +123,14 @@ struct AnmEntry
     // The instruction streams for this entry, in anm/<name>/scripts_<entry>.bin. Held here so
     // ReleaseAnm can free it: the scripts[] pointers point into it and are read every frame.
     u8 *scriptData;
+    // What this entry occupies, so releasing it does not need the entry's description: the
+    // description lives only for the duration of the load. The slot list is bounded by the
+    // largest stream count in the shipped data, which is 66; the limit here is the same one
+    // the script array uses.
+    i32 textureIdx;
+    i32 spriteCount;
+    i32 scriptCount;
+    i32 scriptSlots[320];
 };
 
 #define MAX_SCRIPTS_SPRITES 2560
@@ -160,7 +169,9 @@ struct AnmManager
     void Flush();
     // `entryIndex` is which entry of the file this is, needed to find its sprite table: that
     // table is a TOML file beside the animation rather than a region inside it.
-    i32 LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset, u32 ownsMemory,
+    // `description` is the entry as anm/<name>/<index>.toml describes it; there is no binary
+    // header to pass any more. `entryIndex` names the files that belong to the entry.
+    i32 LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description, i32 spriteIdxOffset,
                 i32 entryIndex);
     i32 LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset);
     void LoadSprite(u32 spriteIdx, AnmLoadedSprite *sprite);
@@ -398,6 +409,10 @@ struct AnmManager
     GfxTextureHandle textures[MAX_TEXTURES];
     void *imageDataArray[256];
     char *textureNames[MAX_TEXTURES];
+    // Storage for the names above. They used to point into the loaded animation, so they died
+    // with it; the description they come from is only alive for the duration of the load, so
+    // the text has to be copied somewhere that lasts as long as the texture does.
+    char textureNamesOwned[MAX_TEXTURES][96];
     // The file currently being loaded, without its extension. LoadAnm finds an entry's sprite
     // table by it, since the table is a separate file rather than a region of the animation.
     //

@@ -17,8 +17,8 @@
 #include "core/ZunMath.hpp"
 #include "render/ZunGraphics.hpp"
 #include "core/utils.hpp"
+#include "script/AnmEntryFile.hpp"
 #include "script/AnmScripts.hpp"
-#include "script/AnmSprites.hpp"
 
 AnmManager *g_AnmManager;
 
@@ -196,152 +196,117 @@ i32 AnmManager::LoadAnms(i32 anmIdx, const char *path, i32 spriteIdxOffset)
     strncpy(this->currentAnmName, anmName.c_str(), sizeof(this->currentAnmName) - 1);
     this->currentAnmName[sizeof(this->currentAnmName) - 1] = '\0';
 
-    entry = (AnmRawEntry *)FileSystem::OpenFile(path, 0);
-    ownsMemory = 1;
     i32 startIdx = anmIdx;
-    if (!entry)
+    const int entryCount = AnmEntryFile::Count(this->currentAnmName);
+    if (entryCount <= 0)
     {
-        g_GameErrorContext.Fatal("アニメが読み込めません。データが失われてるか壊れています\n");
+        g_GameErrorContext.Fatal("アニメ %s の記述が見つかりません\n", this->currentAnmName);
         return ZUN_ERROR;
     }
-    while (true)
+
+    for (i32 index = 0; index < entryCount; index++)
     {
-        // The entry's position in the file, which is how its sprite table is named.
-        res = LoadAnm(anmIdx, entry, spriteIdxOffset, ownsMemory, anmIdx - startIdx);
+        AnmEntryFile::Entry description;
+        std::string error;
+        if (!AnmEntryFile::Load(this->currentAnmName, index, description, error))
+        {
+            g_GameErrorContext.Fatal("%s\n", error.c_str());
+            this->anmFiles[startIdx].childCount = anmIdx - startIdx;
+            return ZUN_ERROR;
+        }
+
+        res = LoadAnm(anmIdx, description, spriteIdxOffset, index);
         if (res < 0)
         {
             this->anmFiles[startIdx].childCount = anmIdx - startIdx;
             return res;
         }
         anmIdx++;
-        if (entry->nextOffset == 0)
-        {
-            this->anmFiles[startIdx].childCount = anmIdx - startIdx;
-            return ZUN_SUCCESS;
-        }
-        entry = (AnmRawEntry *)((u8 *)entry + entry->nextOffset);
-        ownsMemory = 0;
         spriteIdxOffset = spriteIdxOffset + res;
     }
+
+    this->anmFiles[startIdx].childCount = anmIdx - startIdx;
+    return ZUN_SUCCESS;
 }
 
-i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffset,
-                        u32 ownsMemory, i32 entryIndex)
+i32 AnmManager::LoadAnm(i32 textureIdx, const AnmEntryFile::Entry &description,
+                        i32 spriteIdxOffset, i32 entryIndex)
 {
-    char *name;
-    AnmRawSprite *rawSprite;
     AnmLoadedSprite loadedSprite;
-    i32 *curSprite;
     i32 i;
-    AnmRawEntry *data;
     i32 id;
 
     id = 0;
-    if (!rawEntry)
-    {
-        g_GameErrorContext.Fatal("アニメが読み込めません。データが失われてるか壊れています\n");
-        return ZUN_ERROR;
-    }
     if (textureIdx >= ARRAY_SIZE_SIGNED(this->anmFiles))
     {
         g_GameErrorContext.Fatal("テクスチャ格納先が足りません\n");
         return ZUN_ERROR;
     }
     ReleaseAnm(textureIdx);
-    data = rawEntry;
-    if (data->version != 2)
-    {
-        g_GameErrorContext.Fatal("アニメのバージョンが違います\n");
-        return ZUN_ERROR;
-    }
-    data->textureIdx = textureIdx;
-    data->ownsMemory = ownsMemory;
-    // Every texture is a file beside the animation now; the embedded form is gone. The check
-    // is kept as a hard failure rather than silently taking the other branch, because an
-    // entry that still carries pixels would otherwise load through code no longer exercised
-    // and hide which animation had not been converted.
-    if (data->hasData)
-    {
-        g_GameErrorContext.Fatal(
-            "テクスチャが埋め込まれたままです。アニメを変換してください\n");
-        return ZUN_ERROR;
-    }
 
-    name = (char *)((u8 *)data + data->nameOffset);
-    if (*name == '@')
+    // "@" marks an entry with no image of its own: the descriptor asks for an empty texture of
+    // the given size rather than a file.
+    if (description.texture == "@")
     {
-        CreateEmptyTexture(data->textureIdx, data->width, data->height);
+        CreateEmptyTexture(textureIdx, description.width, description.height);
     }
     else
     {
-        if (LoadTexture(data->textureIdx, name, data->format) != ZUN_SUCCESS)
+        char texturePath[192];
+        snprintf(texturePath, sizeof(texturePath), "th07.data/anm/%s/%s",
+                 this->currentAnmName, description.texture.c_str());
+        if (LoadTexture(textureIdx, texturePath, description.format) != ZUN_SUCCESS)
         {
             g_GameErrorContext.Fatal(
-                "テクスチャ %s が読み込めません。データが失われてるか壊れています\n", name);
+                "テクスチャ %s が読み込めません。データが失われてるか壊れています\n",
+                texturePath);
             return ZUN_ERROR;
         }
     }
-    // A separate alpha channel was only ever used with an embedded image; no entry in the
-    // shipped data had one, and with external textures the PNG carries its own alpha.
-    this->textureNames[textureIdx] = (char *)((u8 *)data + data->nameOffset);
 
-    u32 texWidth = this->textureWidths[textureIdx] ? this->textureWidths[textureIdx] : data->width;
-    u32 texHeight =
-        this->textureHeights[textureIdx] ? this->textureHeights[textureIdx] : data->height;
+    // Held so ReleaseTexture can name what it is releasing; the description lives only for
+    // this call, so the pointer has to be to storage that outlives it.
+    snprintf(this->textureNamesOwned[textureIdx], sizeof(this->textureNamesOwned[0]), "%s",
+             description.texture.c_str());
+    this->textureNames[textureIdx] = this->textureNamesOwned[textureIdx];
 
-    data->spriteIdxOffset = spriteIdxOffset;
+    const u32 texWidth =
+        this->textureWidths[textureIdx] ? this->textureWidths[textureIdx] : description.width;
+    const u32 texHeight =
+        this->textureHeights[textureIdx] ? this->textureHeights[textureIdx] : description.height;
 
-    // The table is a TOML file beside the animation now. The values are the same ones the
-    // binary table held, so the scaling and indexing below are unchanged; only where they
-    // come from differs.
-    std::vector<AnmRawSprite> spriteTable;
-    std::string spriteError;
-    if (!AnmSprites::Load(this->currentAnmName, entryIndex, spriteTable, spriteError))
+    for (i = 0; i < (i32)description.sprites.size(); i++)
     {
-        g_GameErrorContext.Fatal("スプライト表を読み込めません: %s\n", spriteError.c_str());
-        return ZUN_ERROR;
-    }
-    if ((i32)spriteTable.size() != data->numSprites)
-    {
-        g_GameErrorContext.Fatal("スプライト数が一致しません: %d と %d\n", data->numSprites,
-                                 (int)spriteTable.size());
-        return ZUN_ERROR;
-    }
-
-    for (i = 0; i < data->numSprites; i++)
-    {
-        rawSprite = &spriteTable[i];
-        loadedSprite.sourceFileIndex = data->textureIdx;
-        loadedSprite.cols = (f32)texWidth / (f32)data->width;
-        loadedSprite.rows = (f32)texHeight / (f32)data->height;
-        loadedSprite.startPixelInclusive.x = loadedSprite.cols * rawSprite->offset.x;
-        loadedSprite.startPixelInclusive.y = loadedSprite.rows * rawSprite->offset.y;
+        const AnmEntryFile::Sprite &rawSprite = description.sprites[i];
+        loadedSprite.sourceFileIndex = textureIdx;
+        loadedSprite.cols = (f32)texWidth / (f32)description.width;
+        loadedSprite.rows = (f32)texHeight / (f32)description.height;
+        loadedSprite.startPixelInclusive.x = loadedSprite.cols * rawSprite.offsetX;
+        loadedSprite.startPixelInclusive.y = loadedSprite.rows * rawSprite.offsetY;
         loadedSprite.endPixelInclusive.x =
-            (rawSprite->offset.x + rawSprite->size.x) * loadedSprite.cols;
+            (rawSprite.offsetX + rawSprite.sizeX) * loadedSprite.cols;
         loadedSprite.endPixelInclusive.y =
-            (rawSprite->offset.y + rawSprite->size.y) * loadedSprite.rows;
+            (rawSprite.offsetY + rawSprite.sizeY) * loadedSprite.rows;
         loadedSprite.textureWidth = (f32)texWidth;
         loadedSprite.textureHeight = (f32)texHeight;
-        if (id < rawSprite->id)
+        if (id < rawSprite.id)
         {
-            id = rawSprite->id;
+            id = rawSprite.id;
         }
-        if (rawSprite->id + spriteIdxOffset >= ARRAY_SIZE_SIGNED(this->sprites))
+        if (rawSprite.id + spriteIdxOffset >= ARRAY_SIZE_SIGNED(this->sprites))
         {
             g_GameErrorContext.Fatal("スプライトが格納できません。テーブルが不足しています\n");
             return ZUN_ERROR;
         }
-        LoadSprite(rawSprite->id + spriteIdxOffset, &loadedSprite);
+        LoadSprite(rawSprite.id + spriteIdxOffset, &loadedSprite);
     }
-    // The sprite entries no longer occupy the front of the offset table, so it now holds only
-    // the script pairs: (index, offset) for each, starting at the beginning.
-    // The streams are a file of their own now; the entry's offsets index it. Everything else
-    // in the entry stays, and the pointers stored below outlive this call, so the buffer is
-    // held until ReleaseAnm.
+
+    // The streams are a file of their own, and the description says where each begins in it.
+    // The pointer is kept on the entry so ReleaseAnm can free it: it is read every frame.
     u32 scriptSize = 0;
     std::string scriptError;
     u8 *scriptData = nullptr;
-    if (data->numScripts > 0)
+    if (!description.scripts.empty())
     {
         scriptData = AnmScripts::Load(this->currentAnmName, entryIndex, &scriptSize, scriptError);
         if (!scriptData)
@@ -350,56 +315,63 @@ i32 AnmManager::LoadAnm(i32 textureIdx, AnmRawEntry *rawEntry, i32 spriteIdxOffs
             return ZUN_ERROR;
         }
     }
-    // Held on the entry so ReleaseAnm can free it: the scripts[] pointers below point into it
-    // and are dereferenced every frame.
-    this->anmFiles[textureIdx].scriptData = scriptData;
-    curSprite = data->dataOffsets;
-    for (i = 0; i < data->numScripts; i++, curSprite += 2)
+
+    for (i32 scriptIdx = 0; scriptIdx < (i32)description.scripts.size(); scriptIdx++)
     {
-        if (*curSprite + spriteIdxOffset >= ARRAY_SIZE_SIGNED(this->sprites))
+        const AnmEntryFile::Script &script = description.scripts[scriptIdx];
+        if (script.index + spriteIdxOffset >= ARRAY_SIZE_SIGNED(this->sprites))
         {
             g_GameErrorContext.Fatal("アニメが格納できません。テーブルが不足しています\n");
             return ZUN_ERROR;
         }
-        if (id < *curSprite)
+        if (id < script.index)
         {
-            id = *curSprite;
+            id = script.index;
         }
-        this->scripts[*curSprite + spriteIdxOffset] = (AnmRawInstr *)(scriptData + curSprite[1]);
-        this->spriteIndices[*curSprite + spriteIdxOffset] = spriteIdxOffset;
+        this->scripts[script.index + spriteIdxOffset] =
+            (AnmRawInstr *)(scriptData + script.offset);
+        this->spriteIndices[script.index + spriteIdxOffset] = spriteIdxOffset;
     }
-    this->anmFiles[textureIdx].raw = data;
+
+    this->anmFiles[textureIdx].scriptData = scriptData;
+    this->anmFiles[textureIdx].raw = NULL;
     this->anmFiles[textureIdx].spriteIndexOffset = spriteIdxOffset;
+    // What this entry occupies, so releasing it later does not need the description, which
+    // goes out of scope when this function returns.
+    this->anmFiles[textureIdx].textureIdx = textureIdx;
+    this->anmFiles[textureIdx].spriteCount = (i32)description.sprites.size();
+    this->anmFiles[textureIdx].scriptCount = (i32)description.scripts.size();
+    const i32 slotCapacity = ARRAY_SIZE_SIGNED(this->anmFiles[textureIdx].scriptSlots);
+    for (i32 slot = 0; slot < (i32)description.scripts.size() && slot < slotCapacity; slot++)
+    {
+        this->anmFiles[textureIdx].scriptSlots[slot] = description.scripts[slot].index;
+    }
     return id + 1;
 }
 
 void AnmManager::ReleaseAnm(i32 anmIdx)
 {
-    AnmRawEntry *rawEntry;
-    i32 *afterHdr;
     i32 uvX;
     i32 i;
-    i32 spriteIdxOffset;
-    i32 *spriteIdx;
 
     if (anmIdx < 0 || (u32)anmIdx >= ARRAY_SIZE_SIGNED(this->anmFiles))
     {
         return;
     }
 
-    if (this->anmFiles[anmIdx].raw)
+    // Nothing to release unless something was loaded. The children go first: each entry in
+    // the chain owns the slots its own index covers.
+    if (this->anmFiles[anmIdx].raw != NULL || this->anmFiles[anmIdx].scriptData != NULL ||
+        this->anmFiles[anmIdx].spriteCount > 0)
     {
-        afterHdr = this->anmFiles[anmIdx].raw->dataOffsets;
-        spriteIdxOffset = this->anmFiles[anmIdx].spriteIndexOffset;
-        rawEntry = this->anmFiles[anmIdx].raw;
         uvX = anmIdx + 1;
         for (i = 1; i < this->anmFiles[anmIdx].childCount; i++, uvX++)
         {
             ReleaseAnm(uvX);
         }
-        // The offset table holds only the script pairs now; the sprite rectangles live in a
-        // separate file and their slots are addressed by index, since ids run 0..n-1.
-        for (i = 0; i < rawEntry->numSprites; i++)
+
+        const i32 spriteIdxOffset = this->anmFiles[anmIdx].spriteIndexOffset;
+        for (i = 0; i < this->anmFiles[anmIdx].spriteCount; i++)
         {
             if (i + spriteIdxOffset < ARRAY_SIZE_SIGNED(this->sprites))
             {
@@ -407,36 +379,37 @@ void AnmManager::ReleaseAnm(i32 anmIdx)
                 this->sprites[i + spriteIdxOffset].sourceFileIndex = -1;
             }
         }
-        for (i = 0; i < rawEntry->numScripts; i++, afterHdr += 2)
+
+        for (i = 0; i < this->anmFiles[anmIdx].scriptCount; i++)
         {
-            this->scripts[*afterHdr + spriteIdxOffset] = NULL;
-            this->spriteIndices[*afterHdr + spriteIdxOffset] = 0;
+            const i32 slot = this->anmFiles[anmIdx].scriptSlots[i] + spriteIdxOffset;
+            if (slot >= 0 && slot < ARRAY_SIZE_SIGNED(this->scripts))
+            {
+                this->scripts[slot] = NULL;
+                this->spriteIndices[slot] = 0;
+            }
         }
+
         this->anmFiles[anmIdx].spriteIndexOffset = 0;
-        // The name pointer points into the block released below, so it goes first: leaving it
-        // behind leaves a pointer that any later reader would follow into freed memory.
-        if (rawEntry->textureIdx >= 0 && rawEntry->textureIdx < MAX_TEXTURES)
+        if (this->anmFiles[anmIdx].textureIdx >= 0 &&
+            this->anmFiles[anmIdx].textureIdx < MAX_TEXTURES)
         {
-            this->textureNames[rawEntry->textureIdx] = NULL;
+            this->textureNames[this->anmFiles[anmIdx].textureIdx] = NULL;
+            ReleaseTexture(this->anmFiles[anmIdx].textureIdx);
         }
-        ReleaseTexture(rawEntry->textureIdx);
+
         // The streams are a separate allocation now, so they go with the entry that owned
-        // them. Leaving them behind would leak a copy of every animation's code on each load.
-        if (this->anmFiles[anmIdx].scriptData)
-        {
-            free(this->anmFiles[anmIdx].scriptData);
-            this->anmFiles[anmIdx].scriptData = NULL;
-        }
-        if (rawEntry->ownsMemory)
-        {
-            free(rawEntry);
-        }
+        // them; leaving them behind would leak a copy of every animation's code per load.
+        free(this->anmFiles[anmIdx].scriptData);
+        this->anmFiles[anmIdx].scriptData = NULL;
         this->anmFiles[anmIdx].raw = NULL;
+        this->anmFiles[anmIdx].spriteCount = 0;
+        this->anmFiles[anmIdx].scriptCount = 0;
+        this->anmFiles[anmIdx].childCount = 0;
         this->currentBlendMode = 255;
         this->currentColorOp = 255;
         this->currentVertexShader = 0;
         this->currentTexture = 0;
-        this->anmFiles[anmIdx].childCount = 0;
     }
 }
 

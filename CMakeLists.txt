@@ -121,6 +121,9 @@ target_link_libraries(th07 PRIVATE
     SDL3_ttf-static.lib
     SDL3_image-static.lib
     SDL3-static.lib
+    # Lua 5.4, built as a static library by tools/build_lua_static.py. The animations are
+    # described and scripted in Lua, so it is part of the program rather than a plugin.
+    lua54-static.lib
     OpenGL::GL
     # Win32 libraries SDL3 and FreeType reference when built statically.
     winmm.lib
@@ -135,4 +138,6 @@ target_link_libraries(th07 PRIVATE
     advapi32.lib
     shell32.lib
     kernel32.lib
+    # dbghelp walks the stack in the crash handler.
+    dbghelp.lib
 )

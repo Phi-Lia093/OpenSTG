@@ -5,14 +5,15 @@
 
 #include "core/inttypes.hpp"
 
-// An animation entry, as described by anm/<name>/<entry>.toml.
+// An animation entry, as animation.lua describes it.
 //
-// This replaces the binary header. What was a 0x40-byte structure full of offsets is now a
-// short list of the facts the loader needs: where the texture is, how to read it, how many
-// sprite slots the entry takes, and where each of its streams begins in scripts_N.bin.
+// This replaced the binary header and then the TOML file that replaced it. What was a 0x40-byte
+// structure full of offsets is now a short table of the facts the loader needs: where the
+// texture is, how to read it, how many sprite slots the entry takes, and where each of its
+// streams begins.
 //
-// Everything the old header carried that was layout bookkeeping -- nameOffset, nextOffset,
-// dataOffsets, textureOffset -- is gone, because there is no longer a layout to describe.
+// The description is read by running the Lua and walking the table it returns, so the values
+// are obtained from a real Lua value rather than parsed from text.
 namespace AnmEntryFile
 {
 struct Script
@@ -40,11 +41,10 @@ struct Entry
     std::vector<Script> scripts;
 };
 
-// Number of entries the animation has, or -1 when it has none. Counted by the description
-// files that exist, since the entries are now a set of files rather than a chain.
+// How many entries the animation describes, or 0 when the file is missing or malformed.
 int Count(const char *anmName);
 
-// Reads one entry's description. Returns false and fills `error` when it is missing or
-// malformed.
+// Reads one entry. Returns false and fills `error` when the file is missing, when the Lua fails
+// to run, or when a table the entry needs is absent.
 bool Load(const char *anmName, i32 entryIndex, Entry &out, std::string &error);
 } // namespace AnmEntryFile
